@@ -51,8 +51,23 @@ from utils.lr_scheduler import WarmupMultiFactorScheduler
 
 
 def train_net(args, ctx, pretrained, epoch, prefix, begin_epoch, end_epoch, lr, lr_step):
-    logger, final_output_path = create_logger(config.output_path, args.cfg, config.dataset.image_set)
-    prefix = os.path.join(final_output_path, prefix)
+    if config.dataset.dataset != 'JSONList':
+        logger, final_output_path = create_logger(config.output_path, args.cfg, config.dataset.image_set)
+        prefix = os.path.join(final_output_path, prefix)
+    else:
+        import datetime
+        import logging
+        final_output_path = config.output_path
+        prefix = prefix + '_' + datetime.datetime.now().strftime("%Y-%m-%d_%H_%M_%S")
+        prefix = os.path.join(final_output_path, prefix)
+        shutil.copy2(args.cfg, prefix+'.yaml')
+        log_file = prefix + '.log'
+        head = '%(asctime)-15s %(message)s'
+        logging.basicConfig(filename=log_file, format=head)
+        logger = logging.getLogger()
+        logger.setLevel(logging.INFO)
+        logger.info('prefix: %s' % prefix)
+        print('prefix: %s' % prefix)
 
     # load symbol
     shutil.copy2(os.path.join(curr_path, 'symbols', config.symbol + '.py'), final_output_path)

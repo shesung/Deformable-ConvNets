@@ -28,6 +28,7 @@ class Speedometer(object):
 
         if self.init:
             if count % self.frequent == 0:
+                #print self.frequent, '*', self.batch_size, '/', (time.time() - self.tic) ###
                 speed = self.frequent * self.batch_size / (time.time() - self.tic)
                 s = ''
                 if param.eval_metric is not None:
@@ -35,6 +36,7 @@ class Speedometer(object):
                     s = "Epoch[%d] Batch [%d]\tSpeed: %.2f samples/sec\tTrain-" % (param.epoch, count, speed)
                     for n, v in zip(name, value):
                         s += "%s=%f,\t" % (n, v)
+                    param.eval_metric.reset()
                 else:
                     s = "Iter[%d] Batch [%d]\tSpeed: %.2f samples/sec" % (param.epoch, count, speed)
 
@@ -48,6 +50,14 @@ class Speedometer(object):
 
 def do_checkpoint(prefix, means, stds):
     def _callback(iter_no, sym, arg, aux):
+        if 'bbox_pred_weight' in arg:
+            arg['bbox_pred_weight_test'] = (arg['bbox_pred_weight'].T * mx.nd.array(stds)).T
+            arg['bbox_pred_bias_test'] = arg['bbox_pred_bias'] * mx.nd.array(stds) + mx.nd.array(means)
+            mx.model.save_checkpoint(prefix, iter_no + 1, sym, arg, aux)
+            arg.pop('bbox_pred_weight_test')
+            arg.pop('bbox_pred_bias_test')
+            return
+
         weight = arg['rfcn_bbox_weight']
         bias = arg['rfcn_bbox_bias']
         repeat = bias.shape[0] / means.shape[0]

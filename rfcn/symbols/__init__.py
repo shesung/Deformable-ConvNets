@@ -1,4 +1,16 @@
 import resnet_v1_101_rfcn
 import resnet_v1_101_rfcn_dcn
+import resnet_v1_101_rfcn_light
 import deform_conv_demo
 import deform_psroi_demo
+
+import mobilenet_rfcn
+import mobilenet_light
+
+import resnet_34_rfcn
+import resnet_34_rfcn_thin
+import resnet_34_light
+
+import resnet_18_rfcn
+import resnet_18_rfcn_thin
+import resnet_18_light
