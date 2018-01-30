@@ -180,7 +180,7 @@ def update_config(config_file):
                     for vk, vv in v.items():
                         config[k][vk] = vv
                 else:
-                    if k == 'SCALES':
+                    if k == 'SCALES' and isinstance(v[0], int):
                         config[k][0] = (tuple(v))
                     else:
                         config[k] = v
