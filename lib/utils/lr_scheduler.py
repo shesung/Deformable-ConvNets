@@ -54,7 +54,7 @@ class WarmupMultiFactorScheduler(LRScheduler):
 
         # NOTE: use while rather than if  (for continuing training via load_epoch)
         if self.warmup and num_update < self.warmup_step:
-            return self.warmup_lr
+            return self.warmup_lr + float(num_update) / self.warmup_step * (self.base_lr - self.warmup_lr)
         while self.cur_step_ind <= len(self.step)-1:
             if num_update > self.step[self.cur_step_ind]:
                 self.count = self.step[self.cur_step_ind]

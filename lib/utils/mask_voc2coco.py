@@ -9,7 +9,7 @@ from skimage.draw import polygon
 import numpy as np
 import cv2
 from utils.tictoc import tic, toc
-from dataset.pycocotools.mask import encode as encodeMask_c
+from pycocotools.mask import encode as encodeMask_c
 
 def encodeMask(M):
     """
