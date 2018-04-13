@@ -118,7 +118,7 @@ def get_rcnn_batch(roidb, cfg):
 
 
 def sample_rois(rois, fg_rois_per_image, rois_per_image, num_classes, cfg,
-                labels=None, overlaps=None, bbox_targets=None, gt_boxes=None):
+                labels=None, overlaps=None, bbox_targets=None, gt_boxes=None, gt_kps=None):
     """
     generate random sample of ROIs comprising foreground and background examples
     :param rois: all_rois [n, 4]; e2e: [n, 5] with batch_index
@@ -129,6 +129,7 @@ def sample_rois(rois, fg_rois_per_image, rois_per_image, num_classes, cfg,
     :param overlaps: maybe precomputed (max_overlaps)
     :param bbox_targets: maybe precomputed
     :param gt_boxes: optional for e2e [n, 5] (x1, y1, x2, y2, cls)
+    :param gt_kps: optional for e2e [n, num_kps*3] (x1, y1, v1, ...)
     :return: (labels, rois, bbox_targets, bbox_weights)
     """
     if labels is None:
@@ -182,5 +183,86 @@ def sample_rois(rois, fg_rois_per_image, rois_per_image, num_classes, cfg,
     bbox_targets, bbox_weights = \
         expand_bbox_regression_targets(bbox_target_data, num_classes, cfg)
 
+    if gt_kps is not None:
+        keep_kps = gt_kps[gt_assignment[keep_indexes]]
+        n_keep = keep_kps.shape[0]
+        K = cfg.dataset.NUM_KEYPOINTS
+        assert gt_kps.shape[1] == K*3
+
+        G = 7 # pooled_size
+        kps_labels = np.empty([n_keep, K], dtype=np.float32)
+        kps_labels.fill(-1)
+        kps_targets = np.zeros([n_keep, K, G, G, 2], dtype=np.float32)
+        kps_weights = kps_targets.copy()
+        num_fg = fg_indexes.size
+        assert num_fg > 0, 'need at least one roi'
+
+        # assgin kp targets
+        fg_kps_label, fg_kps_target, fg_kps_weight =  assign_keypoints(rois[:num_fg, 1:], keep_kps[:num_fg], pooled_size=G)
+        kps_labels[:num_fg]  = fg_kps_label
+        kps_targets[:num_fg] = fg_kps_target
+        normalizer = 1.0 / (num_fg + 1e-3)
+        kps_weights[:num_fg] = fg_kps_weight * normalizer
+
+        kps_labels = kps_labels.reshape([-1])
+        kps_targets = kps_targets.transpose([0,1,4,2,3]).reshape([n_keep, -1, G, G])
+        kps_weights = kps_weights.transpose([0,1,4,2,3]).reshape([n_keep, -1, G, G])
+
+        return rois, labels, bbox_targets, bbox_weights, kps_labels, kps_targets, kps_weights
+
     return rois, labels, bbox_targets, bbox_weights
+
+
+def assign_keypoints(rois, gt_kps, pooled_size=7):
+    '''
+    rois: [N, 4]
+    gt_kps: [N, K*3]
+
+    Returns:
+    kps_label: [N, K]
+    kps_target: [N, K, pooled_size, pooled_size, 2]
+    kps_weight: [N, K, pooled_size, pooled_size, 2]
+    '''
+    assert rois.shape[0]  == gt_kps.shape[0], 'n_rois and n_gt do not match !'
+
+    N = rois.shape[0]
+    K = gt_kps.shape[1] / 3
+    G = pooled_size
+
+    # generate grid centers for all rois
+    def generate_grid_centers(rois, G):
+        roi_wh = rois[:,2:4] - rois[:,0:2]  # [N, 2]
+        roi_origin = rois[:,0:2]            # [N, 2]
+        gx, gy = np.meshgrid(np.arange(0.5/G, 1., 1./G), np.arange(0.5/G, 1., 1./G))
+        g_ctrs = np.stack([gx.ravel(), gy.ravel()], axis=-1)       # [G*G, 2]
+        ctrs = roi_wh[:, np.newaxis, :] * g_ctrs[np.newaxis, :, :] # [N, G*G, 2]
+        ctrs = ctrs + roi_origin[:, np.newaxis, :]                 # [N, G*G, 2]
+        ctrs = np.repeat(ctrs, K, axis=0)                          # [N*K, G*G, 2]
+        return ctrs
+    all_ctrs = generate_grid_centers(rois, G) # [N*K, G*G, 2]
+
+    # compute offset for each grid of each roi
+    kp_xyv = gt_kps.reshape([-1, 3])                # [N*K, 3]
+    kp_v   = kp_xyv[:,2].astype(np.int)             # [N*K]
+    kp_xy  = kp_xyv[:,:2]                           # [N*K, 2]
+    kps_offset = kp_xy[:, np.newaxis, :] - all_ctrs # [N*K, G*G, 2]
+
+    # assign each kp to one grid
+    dist = np.sum(np.square(kps_offset), axis=-1) # [N*K, G*G]
+    argmin_dist = dist.argmin(axis=1)             # [N*K]
+    kps_label = argmin_dist.astype(np.float32)    # [N*K]
+    kps_label[np.where(kp_v < 1)] = -1
+
+    # normalize targets by grid width and height
+    wh = rois[:,2:4] - rois[:,0:2] + 1.0            # [N, 2]
+    gwh = wh * (1.0 / G)
+    gwh = gwh.repeat(K, axis=0)                     # [N*K, 2]
+    kps_target = kps_offset / gwh[:, np.newaxis, :] # [N*K, G*G, 2]
+
+    # compute weights, and normalize by K
+    kps_weight = np.zeros_like(kps_target) # [N*K, G*G, 2]
+    kps_weight[np.arange(kps_weight.shape[0]), argmin_dist] = 1.0/K
+    kps_weight[np.where(kp_v < 1)] = 0
+
+    return kps_label.reshape([N, K]), kps_target.reshape([N, K, G, G, 2]), kps_weight.reshape([N, K, G, G, 2])
 

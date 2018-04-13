@@ -41,6 +41,10 @@ class ProposalTargetOperator(mx.operator.CustomOp):
             'batchimages {} must devide batch_rois {}'.format(self._batch_images, self._batch_rois)
         all_rois = in_data[0].asnumpy()
         gt_boxes = in_data[1].asnumpy()
+        all_kps = None
+        if self._cfg.network.PREDICT_KEYPOINTS:
+            all_kps = in_data[2].asnumpy()
+
 
         if self._batch_rois == -1:
             rois_per_image = all_rois.shape[0] + gt_boxes.shape[0]
@@ -56,10 +60,11 @@ class ProposalTargetOperator(mx.operator.CustomOp):
         # Sanity check: single batch only
         assert np.all(all_rois[:, 0] == 0), 'Only single item batches are supported'
 
-        rois, labels, bbox_targets, bbox_weights = \
-            sample_rois(all_rois, fg_rois_per_image, rois_per_image, self._num_classes, self._cfg, gt_boxes=gt_boxes)
+        sample_res = \
+            sample_rois(all_rois, fg_rois_per_image, rois_per_image, self._num_classes, self._cfg, gt_boxes=gt_boxes, gt_kps=all_kps)
 
         if DEBUG:
+            label = sample_res[1]
             print "labels=", labels
             print 'num fg: {}'.format((labels > 0).sum())
             print 'num bg: {}'.format((labels == 0).sum())
@@ -71,12 +76,14 @@ class ProposalTargetOperator(mx.operator.CustomOp):
             print 'num bg avg: {}'.format(self._bg_num / self._count)
             print 'ratio: {:.3f}'.format(float(self._fg_num) / float(self._bg_num))
 
-        for ind, val in enumerate([rois, labels, bbox_targets, bbox_weights]):
+        for ind, val in enumerate(sample_res):
             self.assign(out_data[ind], req[ind], val)
 
     def backward(self, req, out_grad, in_data, out_data, in_grad, aux):
         self.assign(in_grad[0], req[0], 0)
         self.assign(in_grad[1], req[1], 0)
+        if self._cfg.network.PREDICT_KEYPOINTS:
+            self.assign(in_grad[2], req[2], 0)
 
 
 @mx.operator.register('proposal_target')
@@ -90,10 +97,15 @@ class ProposalTargetProp(mx.operator.CustomOpProp):
         self._fg_fraction = float(fg_fraction)
 
     def list_arguments(self):
+        if self._cfg.network.PREDICT_KEYPOINTS:
+            return ['rois', 'gt_boxes', 'gt_kps']
         return ['rois', 'gt_boxes']
 
     def list_outputs(self):
-        return ['rois_output', 'label', 'bbox_target', 'bbox_weight']
+        outputs = ['rois_output', 'label', 'bbox_target', 'bbox_weight']
+        if self._cfg.network.PREDICT_KEYPOINTS:
+            outputs = outputs + ['kps_label', 'kps_pos_target', 'kps_pos_weight']
+        return outputs
 
     def infer_shape(self, in_shape):
         rpn_rois_shape = in_shape[0]
@@ -105,9 +117,20 @@ class ProposalTargetProp(mx.operator.CustomOpProp):
         label_shape = (rois, )
         bbox_target_shape = (rois, self._num_classes * 4)
         bbox_weight_shape = (rois, self._num_classes * 4)
+        input_shapes = [rpn_rois_shape, gt_boxes_shape]
+        output_shapes = [output_rois_shape, label_shape, bbox_target_shape, bbox_weight_shape]
 
-        return [rpn_rois_shape, gt_boxes_shape], \
-               [output_rois_shape, label_shape, bbox_target_shape, bbox_weight_shape]
+        if self._cfg.network.PREDICT_KEYPOINTS:
+            gt_kps_shape = in_shape[2]
+            G = 7 # roi pooled_size
+            K = self._cfg.dataset.NUM_KEYPOINTS
+            kps_label_shape = (rois*K, )
+            kps_target_shape = (rois, 2*K, G, G)
+            kps_weight_shape = (rois, 2*K, G, G)
+            input_shapes = input_shapes + [gt_kps_shape]
+            output_shapes = output_shapes + [kps_label_shape, kps_target_shape, kps_weight_shape]
+
+        return input_shapes, output_shapes
 
     def create_operator(self, ctx, shapes, dtypes):
         return ProposalTargetOperator(self._num_classes, self._batch_images, self._batch_rois, self._cfg, self._fg_fraction)

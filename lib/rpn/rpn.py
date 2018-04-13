@@ -33,7 +33,7 @@ def get_rpn_testbatch(roidb, cfg):
     :return: data, label, im_info
     """
     # assert len(roidb) == 1, 'Single batch only'
-    imgs, roidb = get_image(roidb, cfg)
+    imgs, roidb = get_image(roidb, cfg, is_train=False)
     im_array = imgs
     im_info = [np.array([roidb[i]['im_info']], dtype=np.float32) for i in range(len(roidb))]
 
@@ -61,12 +61,17 @@ def get_rpn_batch(roidb, cfg):
         gt_boxes = np.empty((roidb[0]['boxes'].shape[0], 5), dtype=np.float32)
         gt_boxes[:, 0:4] = roidb[0]['boxes'][gt_inds, :]
         gt_boxes[:, 4] = roidb[0]['gt_classes'][gt_inds]
+        if cfg.network.PREDICT_KEYPOINTS:
+            gt_kps = roidb[0]['keypoints'][gt_inds, :].astype(np.float32)
     else:
         gt_boxes = np.empty((0, 5), dtype=np.float32)
+        gt_kps = np.empty((0, 3*cfg.dataset.NUM_KEYPOINTS), dtype=np.float32)
 
     data = {'data': im_array,
             'im_info': im_info}
     label = {'gt_boxes': gt_boxes}
+    if cfg.network.PREDICT_KEYPOINTS:
+        label['gt_kps'] = gt_kps
 
     return data, label
 

@@ -127,6 +127,7 @@ def im_detect(predictor, data_batch, data_names, scales, cfg):
     data_dict_all = [dict(zip(data_names, idata)) for idata in data_batch.data]
     scores_all = []
     pred_boxes_all = []
+    pred_kps_all = []
     for output, data_dict, scale in zip(output_all, data_dict_all, scales):
         if cfg.TEST.HAS_RPN:
             rois = output['rois_output'].asnumpy()[:, 1:]
@@ -147,7 +148,60 @@ def im_detect(predictor, data_batch, data_names, scales, cfg):
 
         scores_all.append(scores)
         pred_boxes_all.append(pred_boxes)
+
+
+        if cfg.network.PREDICT_KEYPOINTS:
+            # only support batch_size==1
+            kps_deltas = output['kps_pos_pred_reshape_output'].asnumpy() # [N, 2*K, G, G]
+            kps_probs = output['kps_prob_output'].asnumpy()              # [N*K, G*G]
+            pred_kps = predict_keypoints(rois, kps_probs, kps_deltas, scale=scale)
+            pred_kps_all.append(pred_kps)
+
+    if cfg.network.PREDICT_KEYPOINTS:
+        return scores_all, pred_boxes_all, pred_kps_all, data_dict_all
     return scores_all, pred_boxes_all, data_dict_all
+
+def predict_keypoints(rois, kps_probs, kps_deltas, scale=1.0):
+    '''
+    rois      : [N, 4]
+    kps_probs : [N*K, G*G]
+    kps_deltas: [N, 2*K, G, G]
+
+    Return
+    pred_kps  : [N, K*3]
+    '''
+    N = rois.shape[0]         # number of rois
+    G = kps_deltas.shape[-1]  # roipooled size
+    K = kps_deltas.shape[1]/2 # types of keypoint
+
+
+    # generate grid centers for all rois
+    def generate_grid_centers(rois, G):
+        roi_wh = rois[:,2:4] - rois[:,0:2]  # [N, 2]
+        roi_origin = rois[:,0:2]            # [N, 2]
+        gx, gy = np.meshgrid(np.arange(0.5/G, 1., 1./G), np.arange(0.5/G, 1., 1./G))
+        g_ctrs = np.stack([gx.ravel(), gy.ravel()], axis=-1)       # [G*G, 2]
+        ctrs = roi_wh[:, np.newaxis, :] * g_ctrs[np.newaxis, :, :] # [N, G*G, 2]
+        ctrs = ctrs + roi_origin[:, np.newaxis, :]                 # [N, G*G, 2]
+        ctrs = np.repeat(ctrs, K, axis=0)                          # [N*K, G*G, 2]
+        return ctrs
+    all_ctrs = generate_grid_centers(rois, G) # [N*K, G*G, 2]
+
+    argmax = kps_probs.argmax(axis=-1)                           # [N*K]
+    argmax_probs = kps_probs.max(axis=-1).reshape([-1,1])        # [N*K, 1]
+
+    wh = rois[:,2:4] - rois[:,0:2]   # [N, 2]
+    gwh = wh * (1.0 / G)             # [N, 2]
+    gwh = gwh.repeat(K, axis=0)      # [N*K, 2]
+
+    offset = kps_deltas.reshape([-1, 2, G*G]).transpose([0, 2, 1]) # [N*K, G*G, 2]
+    argmax_offset = offset[np.arange(offset.shape[0]), argmax]     # [N*K, 2]
+    argmax_ctrs = all_ctrs[np.arange(all_ctrs.shape[0]), argmax]   # [N*K, 2]
+    pred_xy = argmax_offset * gwh + argmax_ctrs                    # [N*K, 2]
+    pred_xy *= 1.0 / scale
+    pred_kps = np.concatenate([pred_xy, argmax_probs], axis=1)     # [N*K, 3]
+
+    return pred_kps.reshape([N, K*3])
 
 
 def pred_eval(predictor, test_data, imdb, cfg, vis=False, thresh=1e-3, logger=None, ignore_cache=True):
@@ -165,8 +219,10 @@ def pred_eval(predictor, test_data, imdb, cfg, vis=False, thresh=1e-3, logger=No
     det_file = os.path.join(imdb.result_path, imdb.name + '_detections.pkl')
     if os.path.exists(det_file) and not ignore_cache:
         with open(det_file, 'rb') as fid:
-            all_boxes = cPickle.load(fid)
-        info_str = imdb.evaluate_detections(all_boxes)
+            cache_res = cPickle.load(fid)
+            all_boxes = cache_res['all_boxes']
+            all_keypoints = cache_res.get('all_keypoints')
+        info_str = imdb.evaluate_detections(all_boxes, all_keypoints=all_keypoints)
         if logger:
             logger.info('evaluate detections: \n{}'.format(info_str))
         return
@@ -186,8 +242,12 @@ def pred_eval(predictor, test_data, imdb, cfg, vis=False, thresh=1e-3, logger=No
     # all detections are collected into:
     #    all_boxes[cls][image] = N x 5 array of detections in
     #    (x1, y1, x2, y2, score)
-    all_boxes = [[[] for _ in range(num_images)]
+    all_boxes = [[np.array([]) for _ in range(num_images)]
                  for _ in range(imdb.num_classes)]
+    all_keypoints = None
+    if cfg.network.PREDICT_KEYPOINTS:
+        all_keypoints = [[np.array([]) for _ in range(num_images)]
+                         for _ in range(imdb.num_classes)]
 
     idx = 0
     data_time, net_time, post_time = 0.0, 0.0, 0.0
@@ -197,7 +257,12 @@ def pred_eval(predictor, test_data, imdb, cfg, vis=False, thresh=1e-3, logger=No
         t = time.time()
 
         scales = [iim_info[0, 2] for iim_info in im_info]
-        scores_all, boxes_all, data_dict_all = im_detect(predictor, data_batch, data_names, scales, cfg)
+        rets = im_detect(predictor, data_batch, data_names, scales, cfg)
+        scores_all = rets[0]
+        boxes_all = rets[1]
+        data_dict_all = rets[-1]
+        if cfg.network.PREDICT_KEYPOINTS:
+            pred_kps_all = rets[2]
 
         t2 = time.time() - t
         t = time.time()
@@ -209,6 +274,8 @@ def pred_eval(predictor, test_data, imdb, cfg, vis=False, thresh=1e-3, logger=No
                 cls_dets = np.hstack((cls_boxes, cls_scores))
                 keep = nms(cls_dets)
                 all_boxes[j][idx+delta] = cls_dets[keep, :]
+                if cfg.network.PREDICT_KEYPOINTS:
+                    all_keypoints[j][idx+delta] = pred_kps_all[delta][indexes, :][keep, :]
 
             if max_per_image > 0:
                 image_scores = np.hstack([all_boxes[j][idx+delta][:, -1]
@@ -218,6 +285,8 @@ def pred_eval(predictor, test_data, imdb, cfg, vis=False, thresh=1e-3, logger=No
                     for j in range(1, imdb.num_classes):
                         keep = np.where(all_boxes[j][idx+delta][:, -1] >= image_thresh)[0]
                         all_boxes[j][idx+delta] = all_boxes[j][idx+delta][keep, :]
+                        if cfg.network.PREDICT_KEYPOINTS:
+                            all_keypoints[j][idx+delta] = all_keypoints[j][idx+delta][keep, :]
 
             if vis:
                 boxes_this_image = [[]] + [all_boxes[j][idx+delta] for j in range(1, imdb.num_classes)]
@@ -234,9 +303,9 @@ def pred_eval(predictor, test_data, imdb, cfg, vis=False, thresh=1e-3, logger=No
             logger.info('testing {}/{} data {:.4f}s net {:.4f}s post {:.4f}s'.format(idx, imdb.num_images, data_time / idx * test_data.batch_size, net_time / idx * test_data.batch_size, post_time / idx * test_data.batch_size))
 
     with open(det_file, 'wb') as f:
-        cPickle.dump(all_boxes, f, protocol=cPickle.HIGHEST_PROTOCOL)
+        cPickle.dump({'all_boxes':all_boxes, 'all_keypoints':all_keypoints}, f, protocol=cPickle.HIGHEST_PROTOCOL)
 
-    info_str = imdb.evaluate_detections(all_boxes)
+    info_str = imdb.evaluate_detections(all_boxes, all_keypoints=all_keypoints)
     if logger:
         logger.info('evaluate detections: \n{}'.format(info_str))
 

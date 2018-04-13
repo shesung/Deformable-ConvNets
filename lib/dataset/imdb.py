@@ -218,6 +218,19 @@ class IMDB(object):
                      'max_classes': roidb[i]['max_classes'],
                      'max_overlaps': roidb[i]['max_overlaps'],
                      'flipped': True}
+            if roi_rec.has_key('keypoints'):
+                # keypoints: [ [x1, y1, v1, x2, y2, v2, ...], ...]
+                assert roi_rec['keypoints'].shape[1] % 3 == 0, 'invalid keypoint data!'
+                keypoints = roi_rec['keypoints'].copy()
+                oldx = keypoints[:,0::3].copy()
+                keypoints[:,0::3] = roi_rec['width'] - oldx
+                # after flipping the images, left and right will be switched!!!
+                for i in range(8):
+                    ik = 3 + i*6
+                    new_left = keypoints[:,ik+3:ik+6].copy()
+                    keypoints[:,ik+3:ik+6] = keypoints[:,ik:ik+3]
+                    keypoints[:,ik:ik+3] = new_left
+                entry['keypoints'] = keypoints
 
             # if roidb has mask
             if 'cache_seg_inst' in roi_rec:

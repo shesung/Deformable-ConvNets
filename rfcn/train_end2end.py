@@ -140,6 +140,14 @@ def train_net(args, ctx, pretrained, epoch, prefix, begin_epoch, end_epoch, lr, 
     # rpn_eval_metric, rpn_cls_metric, rpn_bbox_metric, eval_metric, cls_metric, bbox_metric
     for child_metric in [rpn_eval_metric, rpn_cls_metric, rpn_bbox_metric, eval_metric, cls_metric, bbox_metric]:
         eval_metrics.add(child_metric)
+    if config.network.PREDICT_KEYPOINTS:
+        kps_cls_acc = metric.KeypointAccMetric(config)
+        kps_cls_loss = metric.KeypointLogLossMetric(config)
+        kps_pos_loss = metric.KeypointL1LossMetric(config)
+        eval_metrics.add(kps_cls_acc)
+        eval_metrics.add(kps_cls_loss)
+        eval_metrics.add(kps_pos_loss)
+
     # callback
     batch_end_callback = callback.Speedometer(train_data.batch_size, frequent=args.frequent)
     means = np.tile(np.array(config.TRAIN.BBOX_MEANS), 2 if config.CLASS_AGNOSTIC else config.dataset.NUM_CLASSES)

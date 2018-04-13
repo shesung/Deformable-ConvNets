@@ -7,7 +7,7 @@ from bbox.bbox_transform import clip_boxes
 
 
 # TODO: This two functions should be merged with individual data loader
-def get_image(roidb, config):
+def get_image(roidb, config, is_train=True):
     """
     preprocess image and return processed roidb
     :param roidb: a list of roidb
@@ -27,15 +27,33 @@ def get_image(roidb, config):
         if roidb[i]['flipped']:
             im = im[:, ::-1, :]
         new_rec = roi_rec.copy()
-        scale_ind = random.randrange(len(config.SCALES))
-        target_size = config.SCALES[scale_ind][0]
-        max_size = config.SCALES[scale_ind][1]
+        if is_train:
+            scale_ind = random.randrange(len(config.SCALES))
+            target_size = config.SCALES[scale_ind][0]
+            max_size = config.SCALES[scale_ind][1]
+        else:
+            target_size = config.TEST.SCALES[0][0]
+            max_size = config.TEST.SCALES[0][1]
         im, im_scale = resize(im, target_size, max_size, stride=config.network.IMAGE_STRIDE)
         im_tensor = transform(im, config.network.PIXEL_MEANS)
         processed_ims.append(im_tensor)
         im_info = [im_tensor.shape[2], im_tensor.shape[3], im_scale]
         new_rec['boxes'] = clip_boxes(np.round(roi_rec['boxes'].copy() * im_scale), im_info[:2])
         new_rec['im_info'] = im_info
+        if 'keypoints' in roi_rec:
+            new_rec['keypoints'] = roi_rec['keypoints'].copy()
+            new_rec['keypoints'][:,0::3] = np.round(roi_rec['keypoints'][:,0::3] * im_scale)
+            new_rec['keypoints'][:,1::3] = np.round(roi_rec['keypoints'][:,1::3] * im_scale)
+            kps = new_rec['keypoints']
+
+        DEBUG = False ###
+        if DEBUG:
+            import cPickle as pickle
+            out_dir = '/tmp/rcnn-debug/'
+            rand_id = random.randint(100,999)
+            cv2.imwrite(out_dir + str(rand_id) + '.jpg', im)
+            pickle.dump(new_rec, open(out_dir + str(rand_id) + '.pkl', "wb")) ###
+
         processed_roidb.append(new_rec)
     return processed_ims, processed_roidb
 

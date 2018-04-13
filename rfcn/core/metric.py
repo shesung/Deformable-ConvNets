@@ -24,6 +24,8 @@ def get_rcnn_names(cfg):
     if cfg.TRAIN.END2END:
         rpn_pred, rpn_label = get_rpn_names()
         pred = rpn_pred + pred
+        if cfg.network.PREDICT_KEYPOINTS:
+            pred = pred + ['kps_pos_loss', 'kps_prob', 'kps_label']
         label = rpn_label
     return pred, label
 
@@ -174,3 +176,60 @@ class RCNNL1LossMetric(mx.metric.EvalMetric):
 
         self.sum_metric += np.sum(bbox_loss)
         self.num_inst += num_inst
+
+class KeypointAccMetric(mx.metric.EvalMetric):
+    def __init__(self, cfg):
+        super(KeypointAccMetric, self).__init__('KeypointAcc')
+        self.pred, self.label = get_rcnn_names(cfg)
+
+    def update(self, labels, preds):
+        pred  = preds[self.pred.index('kps_prob')]
+        label = preds[self.pred.index('kps_label')]
+
+        last_dim = pred.shape[-1]
+        pred_label = pred.asnumpy().reshape(-1, last_dim).argmax(axis=1).astype('int32')
+        label = label.asnumpy().reshape(-1,).astype('int32')
+
+        # filter with keep_inds
+        keep_inds = np.where(label != -1)
+        pred_label = pred_label[keep_inds]
+        label = label[keep_inds]
+
+        self.sum_metric += np.sum(pred_label.flat == label.flat)
+        self.num_inst += len(pred_label.flat)
+
+class KeypointLogLossMetric(mx.metric.EvalMetric):
+    def __init__(self, cfg):
+        super(KeypointLogLossMetric, self).__init__('KeypointLogLoss')
+        self.pred, self.label = get_rcnn_names(cfg)
+
+    def update(self, labels, preds):
+        pred  = preds[self.pred.index('kps_prob')]
+        label = preds[self.pred.index('kps_label')]
+
+        last_dim = pred.shape[-1]
+        pred = pred.asnumpy().reshape(-1, last_dim)
+        label = label.asnumpy().reshape(-1,).astype('int32')
+
+        # filter with keep_inds
+        keep_inds = np.where(label != -1)[0]
+        label = label[keep_inds]
+        cls = pred[keep_inds, label]
+
+        cls += 1e-14
+        cls_loss = -1 * np.log(cls)
+        cls_loss = np.sum(cls_loss)
+        self.sum_metric += cls_loss
+        self.num_inst += label.shape[0]
+
+class KeypointL1LossMetric(mx.metric.EvalMetric):
+    def __init__(self, cfg):
+        super(KeypointL1LossMetric, self).__init__('KeypointL1Loss')
+        self.pred, self.label = get_rcnn_names(cfg)
+
+    def update(self, labels, preds):
+        kps_pos_loss = preds[self.pred.index('kps_pos_loss')].asnumpy()
+
+        self.sum_metric += np.sum(kps_pos_loss)
+        self.num_inst += 1
+

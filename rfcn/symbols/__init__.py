@@ -10,6 +10,7 @@ import mobilenet_light
 import resnet_34_rfcn
 import resnet_34_rfcn_thin
 import resnet_34_light
+import resnet_34_kps
 
 import resnet_18_rfcn
 import resnet_18_rfcn_thin

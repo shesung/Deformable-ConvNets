@@ -37,6 +37,7 @@ config.network.FIXED_PARAMS_SHARED = ['gamma', 'beta']
 config.network.ANCHOR_SCALES = (8, 16, 32)
 config.network.ANCHOR_RATIOS = (0.5, 1, 2)
 config.network.NUM_ANCHORS = len(config.network.ANCHOR_SCALES) * len(config.network.ANCHOR_RATIOS)
+config.network.PREDICT_KEYPOINTS = False
 
 # dataset related params
 config.dataset = edict()
@@ -46,6 +47,7 @@ config.dataset.test_image_set = '2007_test'
 config.dataset.root_path = './data'
 config.dataset.dataset_path = './data/VOCdevkit'
 config.dataset.NUM_CLASSES = 21
+config.dataset.NUM_KEYPOINTS = 17
 
 
 config.TRAIN = edict()
@@ -109,7 +111,8 @@ config.TRAIN.BG_THRESH_LO = 0.0
 # rcnn bounding box regression params
 config.TRAIN.BBOX_REGRESSION_THRESH = 0.5
 config.TRAIN.BBOX_WEIGHTS = np.array([1.0, 1.0, 1.0, 1.0])
-
+# weights for keypoint loss
+config.TRAIN.KEYPOINT_LOSS_WEIGHTS = [1.0, 1.0]
 # RPN anchor loader
 # rpn anchors batch size
 config.TRAIN.RPN_BATCH_SIZE = 256
@@ -163,6 +166,8 @@ config.TEST.max_per_image = 300
 # Test Model Epoch
 config.TEST.test_epoch = 0
 
+# Test Scale
+config.TEST.SCALES = [(600, 1000)]  # first is scale (the shorter side); second is max size
 
 def update_config(config_file):
     exp_config = None
