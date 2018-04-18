@@ -122,7 +122,7 @@ class ProposalTargetProp(mx.operator.CustomOpProp):
 
         if self._cfg.network.PREDICT_KEYPOINTS:
             gt_kps_shape = in_shape[2]
-            G = 7 # roi pooled_size
+            G = self._cfg.network.KEYPOINTS_POOLED_SIZE
             K = self._cfg.dataset.NUM_KEYPOINTS
             kps_label_shape = (rois*K, )
             kps_target_shape = (rois, 2*K, G, G)

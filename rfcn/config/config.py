@@ -38,6 +38,7 @@ config.network.ANCHOR_SCALES = (8, 16, 32)
 config.network.ANCHOR_RATIOS = (0.5, 1, 2)
 config.network.NUM_ANCHORS = len(config.network.ANCHOR_SCALES) * len(config.network.ANCHOR_RATIOS)
 config.network.PREDICT_KEYPOINTS = False
+config.network.KEYPOINTS_POOLED_SIZE = 7
 
 # dataset related params
 config.dataset = edict()

@@ -26,6 +26,7 @@ from utils.image import get_image, tensor_vstack
 from bbox.bbox_transform import bbox_overlaps, bbox_transform
 from bbox.bbox_regression import expand_bbox_regression_targets
 
+import time ###
 
 def get_rcnn_testbatch(roidb, cfg):
     """
@@ -189,7 +190,7 @@ def sample_rois(rois, fg_rois_per_image, rois_per_image, num_classes, cfg,
         K = cfg.dataset.NUM_KEYPOINTS
         assert gt_kps.shape[1] == K*3
 
-        G = 7 # pooled_size
+        G = cfg.network.KEYPOINTS_POOLED_SIZE
         kps_labels = np.empty([n_keep, K], dtype=np.float32)
         kps_labels.fill(-1)
         kps_targets = np.zeros([n_keep, K, G, G, 2], dtype=np.float32)

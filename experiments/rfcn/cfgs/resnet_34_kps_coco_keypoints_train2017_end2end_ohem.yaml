@@ -7,22 +7,22 @@ CLASS_AGNOSTIC: true
 SCALES:
 -
   - 640
-  - 1333
+  - 1280
 -
   - 672
-  - 1333
+  - 1280
 -
   - 704
-  - 1333
+  - 1280
 -
   - 736
-  - 1333
+  - 1280
 -
   - 768
-  - 1333
+  - 1280
 -
   - 800
-  - 1333
+  - 1280
 default:
   frequent: 100
   kvstore: device
@@ -36,7 +36,6 @@ network:
   - 115.90
   - 123.15
   IMAGE_STRIDE: 0
-  RCNN_FEAT_STRIDE: 16
   RPN_FEAT_STRIDE: 16
   FIXED_PARAMS:
   - bn_data
@@ -57,6 +56,7 @@ network:
   - 32
   NUM_ANCHORS: 15
   PREDICT_KEYPOINTS: true
+  KEYPOINTS_POOLED_SIZE: 7
 dataset:
   NUM_CLASSES: 2
   NUM_KEYPOINTS: 17
@@ -129,7 +129,7 @@ TRAIN:
   RPN_POSITIVE_WEIGHT: -1.0
   # used for end2end training
   # RPN proposal
-  CXX_PROPOSAL: false
+  CXX_PROPOSAL: true
   RPN_NMS_THRESH: 0.7
   RPN_PRE_NMS_TOP_N: 6000
   RPN_POST_NMS_TOP_N: 1000
@@ -150,13 +150,13 @@ TEST:
   SCALES:
   -
     - 800
-    - 1333
+    - 1280
   # use rpn to generate proposal
   HAS_RPN: true
   # size of images for each device
   BATCH_IMAGES: 1
   # RPN proposal
-  CXX_PROPOSAL: false
+  CXX_PROPOSAL: true
   RPN_NMS_THRESH: 0.7
   RPN_PRE_NMS_TOP_N: 6000
   RPN_POST_NMS_TOP_N: 300
