@@ -41,7 +41,7 @@ import mxnet as mx
 
 from symbols import *
 from core import callback, metric
-from core.loader import AnchorLoader
+from core.loader import AnchorLoader, PyramidAnchorLoader
 from core.module import MutableModule
 from utils.create_logger import create_logger
 from utils.load_data import load_gt_roidb, merge_roidb, filter_roidb
@@ -73,7 +73,6 @@ def train_net(args, ctx, pretrained, epoch, prefix, begin_epoch, end_epoch, lr, 
     shutil.copy2(os.path.join(curr_path, 'symbols', config.symbol + '.py'), final_output_path)
     sym_instance = eval(config.symbol + '.' + config.symbol)()
     sym = sym_instance.get_symbol(config, is_train=True)
-    feat_sym = sym.get_internals()['rpn_cls_score_output']
 
     # setup multi-gpu
     batch_size = len(ctx)
@@ -91,9 +90,18 @@ def train_net(args, ctx, pretrained, epoch, prefix, begin_epoch, end_epoch, lr, 
     roidb = merge_roidb(roidbs)
     roidb = filter_roidb(roidb, config)
     # load training data
-    train_data = AnchorLoader(feat_sym, roidb, config, batch_size=input_batch_size, shuffle=config.TRAIN.SHUFFLE, ctx=ctx,
-                              feat_stride=config.network.RPN_FEAT_STRIDE, anchor_scales=config.network.ANCHOR_SCALES,
-                              anchor_ratios=config.network.ANCHOR_RATIOS, aspect_grouping=config.TRAIN.ASPECT_GROUPING)
+    if config.network.MULTI_RPN:
+        num_layers = len(config.network.MULTI_RPN_STRIDES)
+        rpn_syms = [sym.get_internals()['rpn%d_cls_score_output'% l] for l in range(num_layers)]
+        train_data = PyramidAnchorLoader(rpn_syms, roidb, config, batch_size=input_batch_size, shuffle=config.TRAIN.SHUFFLE,
+                                         ctx=ctx, feat_strides=config.network.MULTI_RPN_STRIDES, anchor_scales=config.network.ANCHOR_SCALES,
+                                         anchor_ratios=config.network.ANCHOR_RATIOS, aspect_grouping=config.TRAIN.ASPECT_GROUPING,
+                                         allowed_border=np.inf)
+    else:
+        feat_sym = sym.get_internals()['rpn_cls_score_output']
+        train_data = AnchorLoader(feat_sym, roidb, config, batch_size=input_batch_size, shuffle=config.TRAIN.SHUFFLE, ctx=ctx,
+                                  feat_stride=config.network.RPN_FEAT_STRIDE, anchor_scales=config.network.ANCHOR_SCALES,
+                                  anchor_ratios=config.network.ANCHOR_RATIOS, aspect_grouping=config.TRAIN.ASPECT_GROUPING)
 
     # infer max shape
     max_data_shape = [('data', (config.TRAIN.BATCH_IMAGES, 3, max([v[0] for v in config.SCALES]), max([v[1] for v in config.SCALES])))]

@@ -128,30 +128,39 @@ def im_detect(predictor, data_batch, data_names, scales, cfg):
     scores_all = []
     pred_boxes_all = []
     pred_kps_all = []
-    for output, data_dict, scale in zip(output_all, data_dict_all, scales):
+    for output, data_dict in zip(output_all, data_dict_all):
         if cfg.TEST.HAS_RPN:
-            rois = output['rois_output'].asnumpy()[:, 1:]
+            batch_rois = output['rois_output'].asnumpy()
         else:
             rois = data_dict['rois'].asnumpy().reshape((-1, 5))[:, 1:]
         im_shape = data_dict['data'].shape
 
         # save output
-        scores = output['cls_prob_reshape_output'].asnumpy()[0]
-        bbox_deltas = output['bbox_pred_reshape_output'].asnumpy()[0]
+        batch_scores = output['cls_prob_reshape_output'].asnumpy()
+        batch_bbox_deltas = output['bbox_pred_reshape_output'].asnumpy()
+        batch_im_info = data_dict['im_info'].asnumpy()
 
-        # post processing
-        pred_boxes = bbox_pred(rois, bbox_deltas)
-        pred_boxes = clip_boxes(pred_boxes, im_shape[-2:])
+        for i in range(cfg.TEST.BATCH_IMAGES):
+            scale = batch_im_info[i, 2]
+            if scale < 1e-6:
+                break
+            indices = np.where(batch_rois[:,0] == i)[0]
+            rois = batch_rois[indices, 1:]
+            scores = batch_scores[i]
+            bbox_deltas = batch_bbox_deltas[i]
 
-        # we used scaled image & roi to train, so it is necessary to transform them back
-        pred_boxes = pred_boxes / scale
+            # post processing
+            pred_boxes = bbox_pred(rois, bbox_deltas)
+            pred_boxes = clip_boxes(pred_boxes, im_shape[-2:])
 
-        scores_all.append(scores)
-        pred_boxes_all.append(pred_boxes)
+            # we used scaled image & roi to train, so it is necessary to transform them back
+            pred_boxes = pred_boxes / scale
 
+            scores_all.append(scores)
+            pred_boxes_all.append(pred_boxes)
 
         if cfg.network.PREDICT_KEYPOINTS:
-            # only support batch_size==1
+            assert cfg.TEST.BATCH_IMAGES == 1, "only support batch_size=1"
             kps_deltas = output['kps_pos_pred_reshape_output'].asnumpy() # [N, 2*K, G, G]
             kps_probs = output['kps_prob_output'].asnumpy()              # [N*K, G*G]
             pred_kps = predict_keypoints(rois, kps_probs, kps_deltas, scale=scale)

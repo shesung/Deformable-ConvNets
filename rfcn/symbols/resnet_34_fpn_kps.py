@@ -75,7 +75,7 @@ def residual_unit(data, num_filter, stride, dim_match, name, bottle_neck=True, b
         return conv2 + shortcut
 
 
-class resnet_34_kps(Symbol):
+class resnet_34_fpn_kps(Symbol):
 
     def __init__(self):
         """
@@ -103,7 +103,7 @@ class resnet_34_kps(Symbol):
         output_layers = []
         for i in [0, 1, 2, 3]:
             use_dilated = self.use_dilated if i == 3 else False
-            first_stride = (1, 1) if i in [0, 3] else (2, 2)
+            first_stride = (1, 1) if i == 0 else (2, 2)
             body = residual_unit(body,
                                  num_filter=self.filter_list[i+1],
                                  stride=first_stride,
@@ -125,10 +125,28 @@ class resnet_34_kps(Symbol):
                                      memonger=memonger)
             output_layers.append(body)
         return output_layers
-        #bn1 = mx.sym.BatchNorm(data=body, fix_gamma=False, use_global_stats=True, eps=2e-5, momentum=bn_mom, name='bn1')
-        #relu1 = mx.sym.Activation(data=bn1, act_type='relu', name='relu1')
-        #return relu1
 
+    def get_fpn_feature(self, feat_list, feature_dim=256):
+        c2, c3, c4, c5 = feat_list
+        # lateral connection
+        fpn_p5_1x1 = mx.symbol.Convolution(data=c5, kernel=(1, 1), pad=(0, 0), stride=(1, 1), num_filter=feature_dim, name='fpn_p5_1x1')
+        fpn_p4_1x1 = mx.symbol.Convolution(data=c4, kernel=(1, 1), pad=(0, 0), stride=(1, 1), num_filter=feature_dim, name='fpn_p4_1x1')
+        fpn_p3_1x1 = mx.symbol.Convolution(data=c3, kernel=(1, 1), pad=(0, 0), stride=(1, 1), num_filter=feature_dim, name='fpn_p3_1x1')
+        fpn_p2_1x1 = mx.symbol.Convolution(data=c2, kernel=(1, 1), pad=(0, 0), stride=(1, 1), num_filter=feature_dim, name='fpn_p2_1x1')
+        # top-down connection
+        fpn_p5_upsample = mx.symbol.UpSampling(fpn_p5_1x1, scale=2, sample_type='nearest', name='fpn_p5_upsample')
+        fpn_p4_plus = mx.sym.ElementWiseSum(*[fpn_p5_upsample, fpn_p4_1x1], name='fpn_p4_sum')
+        fpn_p4_upsample = mx.symbol.UpSampling(fpn_p4_plus, scale=2, sample_type='nearest', name='fpn_p4_upsample')
+        fpn_p3_plus = mx.sym.ElementWiseSum(*[fpn_p4_upsample, fpn_p3_1x1], name='fpn_p3_sum')
+        fpn_p3_upsample = mx.symbol.UpSampling(fpn_p3_plus, scale=2, sample_type='nearest', name='fpn_p3_upsample')
+        fpn_p2_plus = mx.sym.ElementWiseSum(*[fpn_p3_upsample, fpn_p2_1x1], name='fpn_p2_sum')
+        # FPN feature
+        fpn_p6 = mx.sym.Convolution(data=c5, kernel=(3, 3), pad=(1, 1), stride=(2, 2), num_filter=feature_dim, name='fpn_p6')
+        fpn_p5 = mx.symbol.Convolution(data=fpn_p5_1x1, kernel=(3, 3), pad=(1, 1), stride=(1, 1), num_filter=feature_dim, name='fpn_p5')
+        fpn_p4 = mx.symbol.Convolution(data=fpn_p4_plus, kernel=(3, 3), pad=(1, 1), stride=(1, 1), num_filter=feature_dim, name='fpn_p4')
+        fpn_p3 = mx.symbol.Convolution(data=fpn_p3_plus, kernel=(3, 3), pad=(1, 1), stride=(1, 1), num_filter=feature_dim, name='fpn_p3')
+        fpn_p2 = mx.symbol.Convolution(data=fpn_p2_plus, kernel=(3, 3), pad=(1, 1), stride=(1, 1), num_filter=feature_dim, name='fpn_p2')
+        return fpn_p2, fpn_p3, fpn_p4, fpn_p5, fpn_p6
 
     def proposal(self, cls_prob, bbox_pred, im_info, feature_stride, scales, ratios,
                  rpn_pre_nms_top_n, rpn_post_nms_top_n, threshold, rpn_min_size, prefix='', cxx_proposal=True):
@@ -210,6 +228,77 @@ class resnet_34_kps(Symbol):
             ret_syms = [rpn_cls_prob, rpn_bbox_loss]
         return rois, ret_syms
 
+    def get_multilayer_proposals(self, layers, im_info, cfg, is_train=True):
+        num_layers = len(layers)
+        all_rois = []
+        all_rpn_cls_score = []
+        all_rpn_bbox_pred = []
+        for l in range(num_layers):
+            prefix = "rpn%d" % l
+            num_anchors = cfg.network.NUM_ANCHORS
+            rpn_conv = mx.sym.Convolution(data=layers[l], kernel=(3, 3), pad=(1, 1), num_filter=256,
+                                          name=prefix+"_conv_3x3")
+            rpn_relu = mx.sym.Activation(data=rpn_conv, act_type="relu", name=prefix+"_relu")
+            rpn_cls_score = mx.sym.Convolution(data=rpn_relu, kernel=(1, 1), pad=(0, 0),
+                                               num_filter=2 * num_anchors, name=prefix+"_cls_score")
+            rpn_cls_score_reshape = mx.sym.Reshape(data=rpn_cls_score,
+                                                   shape=(0, 2, -1),
+                                                   name=prefix+"_cls_score_reshape")
+            rpn_bbox_pred = mx.sym.Convolution(data=rpn_relu, kernel=(1, 1), pad=(0, 0),
+                                               num_filter=4 * num_anchors, name=prefix+"_bbox_pred")
+            rpn_bbox_pred_reshape = mx.sym.Reshape(data=rpn_bbox_pred,
+                                                   shape=(0, 4*num_anchors, -1),
+                                                   name=prefix+"_bbox_pred_reshape")
+
+            # ROI proposal
+            act_cls_score_reshape = mx.sym.Reshape(data=rpn_cls_score,
+                                                   shape=(0, 2, -1, 0),
+                                                   name=prefix+"_act_score_reshape")
+            rpn_cls_act = mx.sym.SoftmaxActivation(data=act_cls_score_reshape,
+                                                   mode="channel", name=prefix+"_cls_act")
+            rpn_cls_act_reshape = mx.sym.Reshape(data=rpn_cls_act,
+                                                 shape=(0, 2 * num_anchors, -1, 0),
+                                                 name=prefix+"_cls_act_reshape")
+
+            rpn_cfg = cfg.TRAIN if is_train else cfg.TEST
+            feature_stride     = cfg.network.MULTI_RPN_STRIDES[l]
+            scales             = tuple(cfg.network.ANCHOR_SCALES)
+            ratios             = tuple(cfg.network.ANCHOR_RATIOS)
+            rpn_pre_nms_top_n  = rpn_cfg.RPN_PRE_NMS_TOP_N
+            rpn_post_nms_top_n = rpn_cfg.RPN_POST_NMS_TOP_N
+            threshold          = rpn_cfg.RPN_NMS_THRESH
+            rpn_min_size       = rpn_cfg.RPN_MIN_SIZE
+            cxx_proposal       = rpn_cfg.CXX_PROPOSAL
+            rois = self.proposal(rpn_cls_act_reshape, rpn_bbox_pred, im_info,
+                                 feature_stride, scales, ratios,
+                                 rpn_pre_nms_top_n, rpn_post_nms_top_n, threshold, rpn_min_size,
+                                 prefix, cxx_proposal)
+            all_rois.append(rois)
+            all_rpn_cls_score.append(rpn_cls_score_reshape)
+            all_rpn_bbox_pred.append(rpn_bbox_pred_reshape)
+
+        rois = mx.sym.Concat(*all_rois, dim=0, name='rois')
+        ret_syms = []
+        if is_train:
+            rpn_label = mx.sym.Variable(name='label')
+            rpn_bbox_target = mx.sym.Variable(name='bbox_target')
+            rpn_bbox_weight = mx.sym.Variable(name='bbox_weight')
+
+            # rpn classification
+            rpn_cls_score = mx.sym.Concat(*all_rpn_cls_score, dim=2, name='rpn_cls_score')
+            rpn_cls_prob = mx.sym.SoftmaxOutput(data=rpn_cls_score, label=rpn_label,
+                                                multi_output=True,normalization='valid', use_ignore=True,
+                                                ignore_label=-1, name="rpn_cls_prob")
+            # rpn bounding box regression
+            rpn_bbox_pred = mx.sym.Concat(*all_rpn_bbox_pred, dim=2, name='rpn_bbox_pred')
+            rpn_bbox_loss_ = rpn_bbox_weight * mx.sym.smooth_l1(name='rpn_bbox_loss_', scalar=3.0,
+                                                                data=(rpn_bbox_pred - rpn_bbox_target))
+            rpn_bbox_loss = mx.sym.MakeLoss(name='rpn_bbox_loss', data=rpn_bbox_loss_,
+                                            grad_scale=1.0 / cfg.TRAIN.RPN_BATCH_SIZE)
+            ret_syms = [rpn_cls_prob, rpn_bbox_loss]
+        return rois, ret_syms
+
+
     def get_symbol(self, cfg, is_train=True):
 
         # config alias for convenient
@@ -222,7 +311,8 @@ class resnet_34_kps(Symbol):
         im_info = mx.sym.Variable(name="im_info")
 
         c2, c3, c4, c5 = self.get_backbone(data)
-        rois, rpn_syms = self.get_proposals(c4, im_info, cfg, is_train)
+        p2, p3, p4, p5, p6 = self.get_fpn_feature([c2,c3,c4,c5], feature_dim=256)
+        rois, rpn_syms = self.get_multilayer_proposals([p2, p3, p4, p5, p6], im_info, cfg, is_train)
 
         if is_train:
             gt_boxes = mx.sym.Variable(name="gt_boxes")
@@ -243,8 +333,8 @@ class resnet_34_kps(Symbol):
                                                                   fg_fraction=cfg.TRAIN.FG_FRACTION)
 
         # conv_new_1
-        spatial_scale = 1.0 / 16
-        conv_new_1 = mx.sym.Convolution(data=c5, kernel=(1, 1), num_filter=256, name="conv_new_1", lr_mult=3.0)
+        spatial_scale = 1.0 / 4
+        conv_new_1 = mx.sym.Convolution(data=p2, kernel=(1, 1), num_filter=256, name="conv_new_1", lr_mult=3.0)
         relu_new_1 = mx.sym.Activation(data=conv_new_1, act_type='relu', name='relu_new_1')
 
         # rfcn_cls/rfcn_bbox
@@ -260,8 +350,8 @@ class resnet_34_kps(Symbol):
         bbox_pred = mx.sym.Reshape(name='bbox_pred_reshape', data=bbox_pred, shape=(-1, 4 * num_reg_classes))
 
         # keypoints
-        kp_spatial_scale = 1.0 / 16
-        conv_kp_1 = mx.sym.Convolution(data=c5, kernel=(1, 1), num_filter=256, name="conv_kp_1", lr_mult=3.0)
+        kp_spatial_scale = 1.0 / 4
+        conv_kp_1 = mx.sym.Convolution(data=p2, kernel=(1, 1), num_filter=256, name="conv_kp_1", lr_mult=3.0)
         relu_kp_1 = mx.sym.Activation(data=conv_kp_1, act_type='relu', name='relu_kp_1')
 
         group_size = 1
@@ -347,6 +437,17 @@ class resnet_34_kps(Symbol):
         arg_params['rpn_bbox_pred_weight'] = mx.random.normal(0, 0.01, shape=self.arg_shape_dict['rpn_bbox_pred_weight'])
         arg_params['rpn_bbox_pred_bias'] = mx.nd.zeros(shape=self.arg_shape_dict['rpn_bbox_pred_bias'])
 
+    def init_weight_multi_rpn(self, cfg, arg_params, aux_params):
+        num_layers = len(cfg.network.MULTI_RPN_STRIDES)
+        for l in range(num_layers):
+            prefix = 'rpn%d' % l
+            arg_params[prefix+'_conv_3x3_weight'] = mx.random.normal(0, 0.01, shape=self.arg_shape_dict[prefix+'_conv_3x3_weight'])
+            arg_params[prefix+'_conv_3x3_bias'] = mx.nd.zeros(shape=self.arg_shape_dict[prefix+'_conv_3x3_bias'])
+            arg_params[prefix+'_cls_score_weight'] = mx.random.normal(0, 0.01, shape=self.arg_shape_dict[prefix+'_cls_score_weight'])
+            arg_params[prefix+'_cls_score_bias'] = mx.nd.zeros(shape=self.arg_shape_dict[prefix+'_cls_score_bias'])
+            arg_params[prefix+'_bbox_pred_weight'] = mx.random.normal(0, 0.01, shape=self.arg_shape_dict[prefix+'_bbox_pred_weight'])
+            arg_params[prefix+'_bbox_pred_bias'] = mx.nd.zeros(shape=self.arg_shape_dict[prefix+'_bbox_pred_bias'])
+
     def init_weight_rfcn(self, cfg, arg_params, aux_params):
         arg_params['conv_new_1_weight'] = mx.random.normal(0, 0.01, shape=self.arg_shape_dict['conv_new_1_weight'])
         arg_params['conv_new_1_bias'] = mx.nd.zeros(shape=self.arg_shape_dict['conv_new_1_bias'])
@@ -362,6 +463,44 @@ class resnet_34_kps(Symbol):
         arg_params['rfcn_kps_mask_weight'] = mx.random.normal(0, 0.01, shape=self.arg_shape_dict['rfcn_kps_mask_weight'])
         arg_params['rfcn_kps_mask_bias'] = mx.nd.zeros(shape=self.arg_shape_dict['rfcn_kps_mask_bias'])
 
+        if 'kp_deconv_1_weight' in self.arg_shape_dict:
+            print self.arg_shape_dict['kp_deconv_1_weight'] ###
+            arg_params['kp_deconv_1_weight'] = mx.nd.zeros(shape=self.arg_shape_dict['kp_deconv_1_weight'])
+            self.init_upsampling(arg_params['kp_deconv_1_weight'])
+
+    def init_weight_fpn(self, cfg, arg_params, aux_params):
+        arg_params['fpn_p6_weight'] = mx.random.normal(0, 0.01, shape=self.arg_shape_dict['fpn_p6_weight'])
+        arg_params['fpn_p6_bias'] = mx.nd.zeros(shape=self.arg_shape_dict['fpn_p6_bias'])
+        arg_params['fpn_p5_weight'] = mx.random.normal(0, 0.01, shape=self.arg_shape_dict['fpn_p5_weight'])
+        arg_params['fpn_p5_bias'] = mx.nd.zeros(shape=self.arg_shape_dict['fpn_p5_bias'])
+        arg_params['fpn_p4_weight'] = mx.random.normal(0, 0.01, shape=self.arg_shape_dict['fpn_p4_weight'])
+        arg_params['fpn_p4_bias'] = mx.nd.zeros(shape=self.arg_shape_dict['fpn_p4_bias'])
+        arg_params['fpn_p3_weight'] = mx.random.normal(0, 0.01, shape=self.arg_shape_dict['fpn_p3_weight'])
+        arg_params['fpn_p3_bias'] = mx.nd.zeros(shape=self.arg_shape_dict['fpn_p3_bias'])
+        arg_params['fpn_p2_weight'] = mx.random.normal(0, 0.01, shape=self.arg_shape_dict['fpn_p2_weight'])
+        arg_params['fpn_p2_bias'] = mx.nd.zeros(shape=self.arg_shape_dict['fpn_p2_bias'])
+
+        arg_params['fpn_p5_1x1_weight'] = mx.random.normal(0, 0.01, shape=self.arg_shape_dict['fpn_p5_1x1_weight'])
+        arg_params['fpn_p5_1x1_bias'] = mx.nd.zeros(shape=self.arg_shape_dict['fpn_p5_1x1_bias'])
+        arg_params['fpn_p4_1x1_weight'] = mx.random.normal(0, 0.01, shape=self.arg_shape_dict['fpn_p4_1x1_weight'])
+        arg_params['fpn_p4_1x1_bias'] = mx.nd.zeros(shape=self.arg_shape_dict['fpn_p4_1x1_bias'])
+        arg_params['fpn_p3_1x1_weight'] = mx.random.normal(0, 0.01, shape=self.arg_shape_dict['fpn_p3_1x1_weight'])
+        arg_params['fpn_p3_1x1_bias'] = mx.nd.zeros(shape=self.arg_shape_dict['fpn_p3_1x1_bias'])
+        arg_params['fpn_p2_1x1_weight'] = mx.random.normal(0, 0.01, shape=self.arg_shape_dict['fpn_p2_1x1_weight'])
+        arg_params['fpn_p2_1x1_bias'] = mx.nd.zeros(shape=self.arg_shape_dict['fpn_p2_1x1_bias'])
+
+    def init_upsampling(self, arr):
+        weight = np.zeros(np.prod(arr.shape), dtype='float32')
+        shape = arr.shape
+        f = np.ceil(shape[3] / 2.)
+        c = (2 * f - 1 - f % 2) / (2. * f)
+        for i in range(np.prod(shape)):
+            x = i % shape[3]
+            y = (i / shape[3]) % shape[2]
+            weight[i] = (1 - abs(x / f - c)) * (1 - abs(y / f - c))
+        arr[:] = weight.reshape(shape)
+
     def init_weight(self, cfg, arg_params, aux_params):
-        self.init_weight_rpn(cfg, arg_params, aux_params)
+        self.init_weight_multi_rpn(cfg, arg_params, aux_params)
         self.init_weight_rfcn(cfg, arg_params, aux_params)
+        self.init_weight_fpn(cfg, arg_params, aux_params)
