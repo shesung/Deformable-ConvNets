@@ -211,7 +211,7 @@ class resnet_34_rfcn_thin(Symbol):
             rpn_cls_prob_reshape = mx.sym.Reshape(
                 data=rpn_cls_prob, shape=(0, 2 * num_anchors, -1, 0), name='rpn_cls_prob_reshape')
             if cfg.TEST.CXX_PROPOSAL:
-                rois = mx.contrib.sym.Proposal(
+                rois = mx.contrib.sym.MultiProposal(
                     cls_prob=rpn_cls_prob_reshape, bbox_pred=rpn_bbox_pred, im_info=im_info, name='rois',
                     feature_stride=cfg.network.RPN_FEAT_STRIDE, scales=tuple(cfg.network.ANCHOR_SCALES),
                     ratios=tuple(cfg.network.ANCHOR_RATIOS),

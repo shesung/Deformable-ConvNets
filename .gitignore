@@ -79,6 +79,7 @@ target/
 *.ipynb
 *.params
 *.json
+*.pyc
 .vscode/
 
 lib/dataset/pycocotools/*.c

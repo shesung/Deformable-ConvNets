@@ -7,14 +7,13 @@
 
 import cPickle
 import mxnet as mx
-from utils.symbol import Symbol
+from symbol import Symbol
 from operator_py.proposal import *
 from operator_py.proposal_target import *
 from operator_py.box_annotator_ohem import *
 
 
-def residual_unit(data, num_filter, stride, dim_match, name, bottle_neck=True, bn_mom=0.9, workspace=256,
-                  memonger=False, use_global_stats=True, use_dilated=False):
+def residual_unit(data, num_filter, stride, dim_match, name, bottle_neck=True, bn_mom=0.9, workspace=256, memonger=False, use_global_stats=True, use_dilated=False):
     """Return ResNet Unit symbol for building ResNet
     Parameters
     ----------
@@ -36,8 +35,7 @@ def residual_unit(data, num_filter, stride, dim_match, name, bottle_neck=True, b
     dilate = (2,2) if use_dilated else ()
     pad_dilate = (2,2) if use_dilated else (1,1)
     if bottle_neck:
-        # the same as https://github.com/facebook/fb.resnet.torch
-        # notes, a bit difference with origin paper
+        # the same as https://github.com/facebook/fb.resnet.torch#notes, a bit difference with origin paper
         bn1 = mx.sym.BatchNorm(data=data, fix_gamma=False, use_global_stats=use_global_stats, eps=2e-5, momentum=bn_mom, name=name + '_bn1')
         act1 = mx.sym.Activation(data=bn1, act_type='relu', name=name + '_relu1')
         conv1 = mx.sym.Convolution(data=act1, num_filter=int(num_filter*0.25), kernel=(1,1), stride=(1,1), pad=(0,0),
@@ -77,100 +75,59 @@ def residual_unit(data, num_filter, stride, dim_match, name, bottle_neck=True, b
         return conv2 + shortcut
 
 
-class resnet_faster2(Symbol):
+class resnet_34_kps(Symbol):
 
-    def get_backbone(self, data, cfg):
-        self.memonger = True
-        self.bn_mom = 0.9
-
+    def __init__(self):
+        """
+        Use __init__ to define parameter network needs
+        """
+        self.eps = 1e-5
+        self.use_global_stats = True
         self.workspace = 512
-        self.use_dilated_in_stage5 = False
-        self.strides = [1, 2, 2, 2]
+        self.units = [3, 4, 6, 3]
+        self.filter_list = [64, 64, 128, 256, 512]
+        self.bottle_neck = False
+        self.use_dilated = False
 
-        num_layers = cfg.network.NUM_LAYERS
-        if num_layers >= 50:
-            self.filter_list = [64, 256, 512, 1024, 2048]
-            self.bottle_neck = True
-        else:
-            self.filter_list = [64, 64, 128, 256, 512]
-            self.bottle_neck = False
+    def get_backbone(self, data):
+        memonger = True
+        bn_mom = 0.9
 
-        if num_layers == 18:
-            self.units = [2, 2, 2, 2]
-        elif num_layers == 34:
-            self.units = [3, 4, 6, 3]
-        elif num_layers == 50:
-            self.units = [3, 4, 6, 3]
-        elif num_layers == 101:
-            self.units = [3, 4, 23, 3]
-        elif num_layers == 152:
-            self.units = [3, 8, 36, 3]
-        elif num_layers == 200:
-            self.units = [3, 24, 36, 3]
-        elif num_layers == 269:
-            self.units = [3, 30, 48, 8]
-        else:
-            raise ValueError("no experiments done on num_layers {}, you can do it yourself".format(num_layers))
-
-        data = mx.sym.BatchNorm(data=data, fix_gamma=True, use_global_stats=True, eps=2e-5,
-                                momentum=self.bn_mom, name='bn_data')
-        body = mx.sym.Convolution(data=data, num_filter=self.filter_list[0], kernel=(7, 7), stride=(2,2),
-                                  pad=(3, 3),no_bias=True, name="conv0", workspace=self.workspace)
-        body = mx.sym.BatchNorm(data=body, fix_gamma=False, use_global_stats=True, eps=2e-5,
-                                momentum=self.bn_mom, name='bn0')
+        data = mx.sym.BatchNorm(data=data, fix_gamma=True, use_global_stats=True, eps=2e-5, momentum=bn_mom, name='bn_data')
+        body = mx.sym.Convolution(data=data, num_filter=self.filter_list[0], kernel=(7, 7), stride=(2,2), pad=(3, 3),
+                                  no_bias=True, name="conv0", workspace=self.workspace)
+        body = mx.sym.BatchNorm(data=body, fix_gamma=False, use_global_stats=True, eps=2e-5, momentum=bn_mom, name='bn0')
         body = mx.sym.Activation(data=body, act_type='relu', name='relu0')
         body = mx.symbol.Pooling(data=body, kernel=(3, 3), stride=(2,2), pad=(1,1), pool_type='max')
 
         output_layers = []
-        num_stages = 4
-        for i in range(num_stages):
-            use_dilated = (i == 3 and self.use_dilated_in_stage5)
+        for i in [0, 1, 2, 3]:
+            use_dilated = self.use_dilated if i == 3 else False
+            first_stride = (1, 1) if i in [0, 3] else (2, 2)
             body = residual_unit(body,
-                                 num_filter  = self.filter_list[i+1],
-                                 stride      = (self.strides[i], self.strides[i]),
-                                 dim_match   = False,
-                                 use_dilated = use_dilated,
-                                 name        = 'stage%d_unit%d' % (i + 1, 1),
-                                 bottle_neck = self.bottle_neck,
-                                 workspace   = self.workspace,
-                                 memonger    = self.memonger)
+                                 num_filter=self.filter_list[i+1],
+                                 stride=first_stride,
+                                 dim_match=False,
+                                 use_dilated=use_dilated,
+                                 name='stage%d_unit%d' % (i + 1, 1),
+                                 bottle_neck=self.bottle_neck,
+                                 workspace=self.workspace,
+                                 memonger=memonger)
             for j in range(self.units[i]-1):
                 body = residual_unit(body,
-                                     num_filter  = self.filter_list[i+1],
-                                     stride      = (1,1),
-                                     dim_match   = True,
-                                     use_dilated = use_dilated,
-                                     name        = 'stage%d_unit%d' % (i + 1, j + 2),
-                                     bottle_neck = self.bottle_neck,
-                                     workspace   = self.workspace,
-                                     memonger    = self.memonger)
+                                     num_filter=self.filter_list[i+1],
+                                     stride=(1,1),
+                                     dim_match=True,
+                                     use_dilated=use_dilated,
+                                     name='stage%d_unit%d' % (i + 1, j + 2),
+                                     bottle_neck=self.bottle_neck,
+                                     workspace=self.workspace,
+                                     memonger=memonger)
             output_layers.append(body)
         return output_layers
-
-
-    def get_stage4(self, data, cfg):
-        for i in [3]:
-            use_dilated = (i == 3 and self.use_dilated_in_stage5)
-            body = residual_unit(data,
-                                 num_filter  = self.filter_list[i+1],
-                                 stride      = (1,1),  # when use stage5 as head, there is no down samplings.
-                                 dim_match   = False,
-                                 use_dilated = use_dilated,
-                                 name        = 'stage%d_unit%d' % (i + 1, 1),
-                                 bottle_neck = self.bottle_neck,
-                                 workspace   = self.workspace,
-                                 memonger    = self.memonger)
-            for j in range(self.units[i]-1):
-                body = residual_unit(body,
-                                     num_filter  = self.filter_list[i+1],
-                                     stride      = (1,1),
-                                     dim_match   = True,
-                                     use_dilated = use_dilated,
-                                     name        = 'stage%d_unit%d' % (i + 1, j + 2),
-                                     bottle_neck = self.bottle_neck,
-                                     workspace   = self.workspace,
-                                     memonger    = self.memonger)
-        return body
+        #bn1 = mx.sym.BatchNorm(data=body, fix_gamma=False, use_global_stats=True, eps=2e-5, momentum=bn_mom, name='bn1')
+        #relu1 = mx.sym.Activation(data=bn1, act_type='relu', name='relu1')
+        #return relu1
 
 
     def proposal(self, cls_prob, bbox_pred, im_info, feature_stride, scales, ratios,
@@ -202,11 +159,9 @@ class resnet_faster2(Symbol):
                                  rpn_min_size=rpn_min_size)
         return rois
 
-
-    def get_proposals(self, data, im_info, cfg, rpn_filters=512, is_train=True):
+    def get_proposals(self, data, im_info, cfg, is_train=True):
         num_anchors = cfg.network.NUM_ANCHORS
-        rpn_conv = mx.sym.Convolution(data=data, kernel=(3, 3), pad=(1, 1), num_filter=rpn_filters,
-                                      name="rpn_conv_3x3")
+        rpn_conv = mx.sym.Convolution(data=data, kernel=(3, 3), pad=(1, 1), num_filter=256, name="rpn_conv_3x3")
         rpn_relu = mx.sym.Activation(data=rpn_conv, act_type="relu", name="rpn_relu")
         rpn_cls_score = mx.sym.Convolution(data=rpn_relu, kernel=(1, 1), pad=(0, 0),
                                            num_filter=2 * num_anchors, name="rpn_cls_score")
@@ -255,23 +210,19 @@ class resnet_faster2(Symbol):
             ret_syms = [rpn_cls_prob, rpn_bbox_loss]
         return rois, ret_syms
 
-
     def get_symbol(self, cfg, is_train=True):
 
         # config alias for convenient
         num_classes = cfg.dataset.NUM_CLASSES
+        num_keypoints = cfg.dataset.NUM_KEYPOINTS
         num_reg_classes = (2 if cfg.CLASS_AGNOSTIC else num_classes)
-        num_anchors = cfg.network.NUM_ANCHORS
 
         # input init
         data = mx.sym.Variable(name="data")
         im_info = mx.sym.Variable(name="im_info")
 
-        # backbone
-        c2, c3, c4, c5 = self.get_backbone(data, cfg)
-
-        # rpn
-        rois, rpn_syms = self.get_proposals(c4, im_info, cfg, 256, is_train)
+        c2, c3, c4, c5 = self.get_backbone(data)
+        rois, rpn_syms = self.get_proposals(c4, im_info, cfg, is_train)
 
         if is_train:
             gt_boxes = mx.sym.Variable(name="gt_boxes")
@@ -279,8 +230,11 @@ class resnet_faster2(Symbol):
 
             # ROI proposal target
             gt_boxes_reshape = mx.sym.Reshape(data=gt_boxes, shape=(-1, 5), name='gt_boxes_reshape')
-            rois, label, bbox_target, bbox_weight = mx.sym.Custom(rois=rois,
+            gt_kps_reshape = mx.sym.Reshape(data=gt_kps, shape=(-1, num_keypoints*3), name='gt_kps_reshape')
+            rois, label, bbox_target, bbox_weight, \
+                    kps_label, kps_pos_target, kps_pos_weight = mx.sym.Custom(rois=rois,
                                                                   gt_boxes=gt_boxes_reshape,
+                                                                  gt_kps = gt_kps_reshape,
                                                                   op_type='proposal_target',
                                                                   num_classes=num_reg_classes,
                                                                   batch_images=cfg.TRAIN.BATCH_IMAGES,
@@ -288,76 +242,102 @@ class resnet_faster2(Symbol):
                                                                   cfg=cPickle.dumps(cfg),
                                                                   fg_fraction=cfg.TRAIN.FG_FRACTION)
 
-        # faster rcnn head
-        # this head is used by FPN paper
-        conv_new_1 = mx.sym.Convolution(data=c5, kernel=(1, 1), num_filter=256, name="conv_new_1")
-        roi_data = mx.sym.Activation(data=conv_new_1, act_type='relu', name='conv_new_1_relu')
-        feat_stride = 32
-        pooled_size = (7, 7)
-        if cfg.network.ROIALIGN:
-            roi_pool = mx.symbol.ROIAlign(name='roi_pool', data=roi_data, rois=rois,
-                                          pooled_size=pooled_size,
-                                          spatial_scale=1.0 / feat_stride)
-        else:
-            roi_pool = mx.symbol.ROIPooling(name='roi_pool', data=roi_data, rois=rois,
-                                            pooled_size=pooled_size,
-                                            spatial_scale=1.0 / feat_stride)
-        # 2 fc
-        fc_new_1 = mx.symbol.FullyConnected(data=roi_pool, num_hidden=1024, name='fc_new_1')
-        fc_new_1_relu = mx.sym.Activation(data=fc_new_1, act_type='relu', name='fc_new_1_relu')
-        fc_new_1_relu = mx.symbol.Dropout(data=fc_new_1_relu, p=0.5, name="fc_new_1_drop")
-        fc_new_2 = mx.symbol.FullyConnected(data=fc_new_1_relu, num_hidden=1024, name='fc_new_2')
-        fc_new_2_relu = mx.sym.Activation(data=fc_new_2, act_type='relu', name='fc_new_2_relu')
-        # cls_score/bbox_pred
-        cls_score = mx.symbol.FullyConnected(name='cls_score', data=fc_new_2_relu, num_hidden=num_classes)
-        bbox_pred = mx.symbol.FullyConnected(name='bbox_pred', data=fc_new_2_relu, num_hidden=num_reg_classes * 4)
+        # conv_new_1
+        spatial_scale = 1.0 / 16
+        conv_new_1 = mx.sym.Convolution(data=c5, kernel=(1, 1), num_filter=256, name="conv_new_1", lr_mult=3.0)
+        relu_new_1 = mx.sym.Activation(data=conv_new_1, act_type='relu', name='relu_new_1')
+
+        # rfcn_cls/rfcn_bbox
+        rfcn_cls = mx.sym.Convolution(data=relu_new_1, kernel=(1, 1), num_filter=7*7*num_classes, name="rfcn_cls")
+        rfcn_bbox = mx.sym.Convolution(data=relu_new_1, kernel=(1, 1), num_filter=7*7*4*num_reg_classes, name="rfcn_bbox")
+        psroipooled_cls_rois = mx.contrib.sym.PSROIPooling(name='psroipooled_cls_rois', data=rfcn_cls, rois=rois, group_size=7, pooled_size=7,
+                                                   output_dim=num_classes, spatial_scale=spatial_scale)
+        psroipooled_loc_rois = mx.contrib.sym.PSROIPooling(name='psroipooled_loc_rois', data=rfcn_bbox, rois=rois, group_size=7, pooled_size=7,
+                                                   output_dim=8, spatial_scale=spatial_scale)
+        cls_score = mx.sym.Pooling(name='ave_cls_scors_rois', data=psroipooled_cls_rois, pool_type='avg', global_pool=True, kernel=(7, 7))
+        bbox_pred = mx.sym.Pooling(name='ave_bbox_pred_rois', data=psroipooled_loc_rois, pool_type='avg', global_pool=True, kernel=(7, 7))
+        cls_score = mx.sym.Reshape(name='cls_score_reshape', data=cls_score, shape=(-1, num_classes))
+        bbox_pred = mx.sym.Reshape(name='bbox_pred_reshape', data=bbox_pred, shape=(-1, 4 * num_reg_classes))
+
+        # keypoints
+        kp_spatial_scale = 1.0 / 16
+        conv_kp_1 = mx.sym.Convolution(data=c5, kernel=(1, 1), num_filter=256, name="conv_kp_1", lr_mult=3.0)
+        relu_kp_1 = mx.sym.Activation(data=conv_kp_1, act_type='relu', name='relu_kp_1')
+
+        group_size = 1
+        group_size2 = group_size * group_size
+        pooled_size = cfg.network.KEYPOINTS_POOLED_SIZE
+        pooled_size2 = pooled_size * pooled_size
+
+        rfcn_kps_pos = mx.sym.Convolution(name="rfcn_kps_pos", data=relu_kp_1,
+                                          kernel=(1, 1), num_filter=group_size2*2*num_keypoints,
+                                          lr_mult=1.0)
+        kps_pos_pred = mx.contrib.sym.PSROIPooling(name='psroipooled_kps_pos', data=rfcn_kps_pos, rois=rois,
+                                                   group_size=group_size,
+                                                   pooled_size=pooled_size,
+                                                   output_dim=2*num_keypoints,
+                                                   spatial_scale=kp_spatial_scale)
+        kps_pos_pred = mx.sym.Reshape(name='kps_pos_pred_reshape', data=kps_pos_pred,
+                                      shape=(-1,2*num_keypoints, pooled_size, pooled_size))
+        # keypoints mask
+        rfcn_kps_mask = mx.sym.Convolution(name="rfcn_kps_mask", data=relu_kp_1,
+                                           kernel=(1, 1), num_filter=group_size2*num_keypoints,
+                                           lr_mult=1.0)
+        kps_mask_pred = mx.contrib.sym.PSROIPooling(name='psroipooled_kps_mask', data=rfcn_kps_mask, rois=rois,
+                                                    group_size=group_size,
+                                                    pooled_size=pooled_size,
+                                                    output_dim=num_keypoints,
+                                                    spatial_scale=kp_spatial_scale)
+        kps_mask_pred = mx.sym.Reshape(name='kps_mask_pred_reshape', data=kps_mask_pred,
+                                       shape=(-1, pooled_size2))
 
         if is_train:
             if cfg.TRAIN.ENABLE_OHEM:
-                labels_ohem, bbox_weights_ohem = mx.sym.Custom(op_type='BoxAnnotatorOHEM',
-                                                               num_classes=num_classes,
-                                                               num_reg_classes=num_reg_classes,
-                                                               roi_per_img=cfg.TRAIN.BATCH_ROIS_OHEM,
-                                                               cls_score=cls_score,
-                                                               bbox_pred=bbox_pred,
-                                                               labels=label,
-                                                               bbox_targets=bbox_target,
-                                                               bbox_weights=bbox_weight)
-                cls_prob = mx.sym.SoftmaxOutput(name='cls_prob', data=cls_score, label=labels_ohem,
-                                                normalization='valid', use_ignore=True, ignore_label=-1)
-                bbox_loss_ = bbox_weights_ohem * mx.sym.smooth_l1(name='bbox_loss_', scalar=1.0,
-                                                                  data=(bbox_pred - bbox_target))
-                bbox_loss = mx.sym.MakeLoss(name='bbox_loss', data=bbox_loss_,
-                                            grad_scale=1.0 / cfg.TRAIN.BATCH_ROIS_OHEM)
+                labels_ohem, bbox_weights_ohem = mx.sym.Custom(op_type='BoxAnnotatorOHEM', num_classes=num_classes,
+                                                               num_reg_classes=num_reg_classes, roi_per_img=cfg.TRAIN.BATCH_ROIS_OHEM,
+                                                               cls_score=cls_score, bbox_pred=bbox_pred, labels=label,
+                                                               bbox_targets=bbox_target, bbox_weights=bbox_weight)
+                cls_prob = mx.sym.SoftmaxOutput(name='cls_prob', data=cls_score, label=labels_ohem, normalization='valid', use_ignore=True, ignore_label=-1)
+                bbox_loss_ = bbox_weights_ohem * mx.sym.smooth_l1(name='bbox_loss_', scalar=1.0, data=(bbox_pred - bbox_target))
+                bbox_loss = mx.sym.MakeLoss(name='bbox_loss', data=bbox_loss_, grad_scale=1.0 / cfg.TRAIN.BATCH_ROIS_OHEM)
                 rcnn_label = labels_ohem
             else:
-                cls_prob = mx.sym.SoftmaxOutput(name='cls_prob', data=cls_score, label=label,
-                                                normalization='valid')
-                bbox_loss_ = bbox_weight * mx.sym.smooth_l1(name='bbox_loss_', scalar=1.0,
-                                                            data=(bbox_pred - bbox_target))
-                bbox_loss = mx.sym.MakeLoss(name='bbox_loss', data=bbox_loss_,
-                                            grad_scale=1.0 / cfg.TRAIN.BATCH_ROIS)
+                cls_prob = mx.sym.SoftmaxOutput(name='cls_prob', data=cls_score, label=label, normalization='valid')
+                bbox_loss_ = bbox_weight * mx.sym.smooth_l1(name='bbox_loss_', scalar=1.0, data=(bbox_pred - bbox_target))
+                bbox_loss = mx.sym.MakeLoss(name='bbox_loss', data=bbox_loss_, grad_scale=1.0 / cfg.TRAIN.BATCH_ROIS)
                 rcnn_label = label
 
             # reshape output
-            rcnn_label = mx.sym.Reshape(data=rcnn_label, shape=(cfg.TRAIN.BATCH_IMAGES, -1),
-                                        name='label_reshape')
-            cls_prob = mx.sym.Reshape(data=cls_prob, shape=(cfg.TRAIN.BATCH_IMAGES, -1, num_classes),
-                                      name='cls_prob_reshape')
-            bbox_loss = mx.sym.Reshape(data=bbox_loss, shape=(cfg.TRAIN.BATCH_IMAGES, -1, 4 * num_reg_classes),
-                                       name='bbox_loss_reshape')
-            group = mx.sym.Group(rpn_syms + [cls_prob, bbox_loss, mx.sym.BlockGrad(rcnn_label)])
-        else:
+            rcnn_label = mx.sym.Reshape(data=rcnn_label, shape=(cfg.TRAIN.BATCH_IMAGES, -1), name='label_reshape')
+            cls_prob = mx.sym.Reshape(data=cls_prob, shape=(cfg.TRAIN.BATCH_IMAGES, -1, num_classes), name='cls_prob_reshape')
+            bbox_loss = mx.sym.Reshape(data=bbox_loss, shape=(cfg.TRAIN.BATCH_IMAGES, -1, 4 * num_reg_classes), name='bbox_loss_reshape')
+
+            # keypoints loss
+            kps_prob = mx.sym.SoftmaxOutput(name='kps_prob', data=kps_mask_pred, label=kps_label,
+                                            normalization='valid',
+                                            use_ignore=True,
+                                            ignore_label=-1,
+                                            grad_scale=cfg.TRAIN.KEYPOINT_LOSS_WEIGHTS[0])
+            kps_pos_loss_ = kps_pos_weight * mx.sym.smooth_l1(name='kps_pos_loss_', scalar=1.0,
+                                                              data=(kps_pos_pred - kps_pos_target))
+            kps_pos_loss = mx.sym.MakeLoss(name='kps_pos_loss', data=kps_pos_loss_,
+                                           grad_scale=cfg.TRAIN.KEYPOINT_LOSS_WEIGHTS[1])
+
+            group = mx.sym.Group(rpn_syms + [cls_prob, bbox_loss, mx.sym.BlockGrad(rcnn_label),
+                                             kps_pos_loss, kps_prob, mx.sym.BlockGrad(kps_label)])
+
+        else: # testing
             cls_prob = mx.sym.SoftmaxActivation(name='cls_prob', data=cls_score)
             cls_prob = mx.sym.Reshape(data=cls_prob, shape=(cfg.TEST.BATCH_IMAGES, -1, num_classes),
                                       name='cls_prob_reshape')
             bbox_pred = mx.sym.Reshape(data=bbox_pred, shape=(cfg.TEST.BATCH_IMAGES, -1, 4 * num_reg_classes),
                                        name='bbox_pred_reshape')
-            group = mx.sym.Group([rois, cls_prob, bbox_pred])
+            # keypoints
+            kps_prob = mx.sym.SoftmaxActivation(name='kps_prob', data=kps_mask_pred)
+            group = mx.sym.Group([rois, cls_prob, bbox_pred, kps_prob, kps_pos_pred])
 
         self.sym = group
         return group
-
 
     def init_weight_rpn(self, cfg, arg_params, aux_params):
         arg_params['rpn_conv_3x3_weight'] = mx.random.normal(0, 0.01, shape=self.arg_shape_dict['rpn_conv_3x3_weight'])
@@ -367,19 +347,21 @@ class resnet_faster2(Symbol):
         arg_params['rpn_bbox_pred_weight'] = mx.random.normal(0, 0.01, shape=self.arg_shape_dict['rpn_bbox_pred_weight'])
         arg_params['rpn_bbox_pred_bias'] = mx.nd.zeros(shape=self.arg_shape_dict['rpn_bbox_pred_bias'])
 
-
-    def init_weight_faster(self, cfg, arg_params, aux_params):
-        arg_params['conv_new_1_weight'] = mx.nd.zeros(shape=self.arg_shape_dict['conv_new_1_weight'])
+    def init_weight_rfcn(self, cfg, arg_params, aux_params):
+        arg_params['conv_new_1_weight'] = mx.random.normal(0, 0.01, shape=self.arg_shape_dict['conv_new_1_weight'])
         arg_params['conv_new_1_bias'] = mx.nd.zeros(shape=self.arg_shape_dict['conv_new_1_bias'])
-        arg_params['fc_new_1_weight'] = mx.random.normal(0, 0.01, shape=self.arg_shape_dict['fc_new_1_weight'])
-        arg_params['fc_new_1_bias'] = mx.nd.zeros(shape=self.arg_shape_dict['fc_new_1_bias'])
-        arg_params['fc_new_2_weight'] = mx.random.normal(0, 0.01, shape=self.arg_shape_dict['fc_new_2_weight'])
-        arg_params['fc_new_2_bias'] = mx.nd.zeros(shape=self.arg_shape_dict['fc_new_2_bias'])
-        arg_params['cls_score_weight'] = mx.random.normal(0, 0.01, shape=self.arg_shape_dict['cls_score_weight'])
-        arg_params['cls_score_bias'] = mx.nd.zeros(shape=self.arg_shape_dict['cls_score_bias'])
-        arg_params['bbox_pred_weight'] = mx.random.normal(0, 0.01, shape=self.arg_shape_dict['bbox_pred_weight'])
-        arg_params['bbox_pred_bias'] = mx.nd.zeros(shape=self.arg_shape_dict['bbox_pred_bias'])
+        arg_params['rfcn_cls_weight'] = mx.random.normal(0, 0.01, shape=self.arg_shape_dict['rfcn_cls_weight'])
+        arg_params['rfcn_cls_bias'] = mx.nd.zeros(shape=self.arg_shape_dict['rfcn_cls_bias'])
+        arg_params['rfcn_bbox_weight'] = mx.random.normal(0, 0.01, shape=self.arg_shape_dict['rfcn_bbox_weight'])
+        arg_params['rfcn_bbox_bias'] = mx.nd.zeros(shape=self.arg_shape_dict['rfcn_bbox_bias'])
+
+        arg_params['conv_kp_1_weight'] = mx.random.normal(0, 0.01, shape=self.arg_shape_dict['conv_kp_1_weight'])
+        arg_params['conv_kp_1_bias'] = mx.nd.zeros(shape=self.arg_shape_dict['conv_kp_1_bias'])
+        arg_params['rfcn_kps_pos_weight'] = mx.random.normal(0, 0.01, shape=self.arg_shape_dict['rfcn_kps_pos_weight'])
+        arg_params['rfcn_kps_pos_bias'] = mx.nd.zeros(shape=self.arg_shape_dict['rfcn_kps_pos_bias'])
+        arg_params['rfcn_kps_mask_weight'] = mx.random.normal(0, 0.01, shape=self.arg_shape_dict['rfcn_kps_mask_weight'])
+        arg_params['rfcn_kps_mask_bias'] = mx.nd.zeros(shape=self.arg_shape_dict['rfcn_kps_mask_bias'])
 
     def init_weight(self, cfg, arg_params, aux_params):
         self.init_weight_rpn(cfg, arg_params, aux_params)
-        self.init_weight_faster(cfg, arg_params, aux_params)
+        self.init_weight_rfcn(cfg, arg_params, aux_params)
