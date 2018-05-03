@@ -72,7 +72,7 @@ def train_net(args, ctx, pretrained, epoch, prefix, begin_epoch, end_epoch, lr, 
         print('prefix: %s' % prefix)
 
     # load symbol
-    shutil.copy2(os.path.join(curr_path, '..', 'symbols', config.symbol + '.py'), final_output_path)
+    #shutil.copy2(os.path.join(curr_path, '..', 'symbols', config.symbol + '.py'), final_output_path)
     sym_instance = eval(config.symbol + '.' + config.symbol)()
     sym = sym_instance.get_symbol(config, is_train=True)
 

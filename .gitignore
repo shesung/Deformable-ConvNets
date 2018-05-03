@@ -91,5 +91,6 @@ data
 external
 output
 model
+experiments
 
 .db

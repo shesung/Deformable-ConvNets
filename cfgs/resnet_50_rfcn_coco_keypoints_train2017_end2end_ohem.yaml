@@ -1,6 +1,6 @@
 ---
 MXNET_VERSION: "mxnet"
-output_path: "./output/rfcn/coco"
+output_path: "./output/coco"
 symbol: resnet_rfcn
 gpus: '0,1,2,3'
 CLASS_AGNOSTIC: true
