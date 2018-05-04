@@ -29,13 +29,11 @@ def parse_args():
     update_config(args.cfg)
 
     # training
-    parser.add_argument('--frequent', help='frequency of logging', default=config.default.frequent, type=int)
+    parser.add_argument('--frequent', help='frequency of logging', default=config.TRAIN.frequent, type=int)
     args = parser.parse_args()
     return args
 
 args = parse_args()
-curr_path = os.path.abspath(os.path.dirname(__file__))
-sys.path.insert(0, os.path.join(curr_path, '../external/mxnet', config.MXNET_VERSION))
 
 import shutil
 import numpy as np
@@ -56,6 +54,7 @@ def train_net(args, ctx, pretrained, epoch, prefix, begin_epoch, end_epoch, lr, 
     if config.dataset.dataset != 'JSONList':
         logger, final_output_path = create_logger(config.output_path, args.cfg, config.dataset.image_set)
         prefix = os.path.join(final_output_path, prefix)
+        shutil.copy2(args.cfg, prefix+'.yaml')
     else:
         import datetime
         import logging
@@ -106,7 +105,7 @@ def train_net(args, ctx, pretrained, epoch, prefix, begin_epoch, end_epoch, lr, 
                                   anchor_ratios=config.network.ANCHOR_RATIOS, aspect_grouping=config.TRAIN.ASPECT_GROUPING)
 
     # infer max shape
-    max_data_shape = [('data', (config.TRAIN.BATCH_IMAGES, 3, max([v[0] for v in config.SCALES]), max([v[1] for v in config.SCALES])))]
+    max_data_shape = [('data', (config.TRAIN.BATCH_IMAGES, 3, max([v[0] for v in config.TRAIN.SCALES]), max([v[1] for v in config.TRAIN.SCALES])))]
     max_data_shape, max_label_shape = train_data.infer_shape(max_data_shape)
     max_data_shape.append(('gt_boxes', (config.TRAIN.BATCH_IMAGES, 100, 5)))
     print('providing maximum shape', max_data_shape, max_label_shape)
@@ -162,7 +161,8 @@ def train_net(args, ctx, pretrained, epoch, prefix, begin_epoch, end_epoch, lr, 
     batch_end_callback = callback.Speedometer(train_data.batch_size, frequent=args.frequent)
     means = np.tile(np.array(config.TRAIN.BBOX_MEANS), 2 if config.CLASS_AGNOSTIC else config.dataset.NUM_CLASSES)
     stds = np.tile(np.array(config.TRAIN.BBOX_STDS), 2 if config.CLASS_AGNOSTIC else config.dataset.NUM_CLASSES)
-    epoch_end_callback = [mx.callback.module_checkpoint(mod, prefix, period=1, save_optimizer_states=True), callback.do_checkpoint(prefix, means, stds)]
+    #epoch_end_callback = [mx.callback.module_checkpoint(mod, prefix, period=1, save_optimizer_states=True), callback.do_checkpoint(prefix, means, stds)]
+    epoch_end_callback = [mx.callback.do_checkpoint(prefix)]
     # decide learning rate
     base_lr = lr
     lr_factor = config.TRAIN.lr_factor
@@ -185,7 +185,7 @@ def train_net(args, ctx, pretrained, epoch, prefix, begin_epoch, end_epoch, lr, 
 
     # train
     mod.fit(train_data, eval_metric=eval_metrics, epoch_end_callback=epoch_end_callback,
-            batch_end_callback=batch_end_callback, kvstore=config.default.kvstore,
+            batch_end_callback=batch_end_callback, kvstore=config.TRAIN.kvstore,
             optimizer='sgd', optimizer_params=optimizer_params,
             arg_params=arg_params, aux_params=aux_params, begin_epoch=begin_epoch, num_epoch=end_epoch)
 

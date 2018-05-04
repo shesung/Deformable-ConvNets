@@ -12,17 +12,10 @@ from easydict import EasyDict as edict
 
 config = edict()
 
-config.MXNET_VERSION = ''
 config.output_path = ''
 config.symbol = ''
 config.gpus = ''
 config.CLASS_AGNOSTIC = True
-config.SCALES = [(600, 1000)]  # first is scale (the shorter side); second is max size
-
-# default training
-config.default = edict()
-config.default.frequent = 20
-config.default.kvstore = 'device'
 
 # network related params
 config.network = edict()
@@ -45,6 +38,7 @@ config.network.NUM_LAYERS = 50
 config.network.ROIALIGN = False
 
 
+
 # dataset related params
 config.dataset = edict()
 config.dataset.dataset = 'PascalVOC'
@@ -54,6 +48,7 @@ config.dataset.root_path = './data'
 config.dataset.dataset_path = './data/VOCdevkit'
 config.dataset.NUM_CLASSES = 21
 config.dataset.NUM_KEYPOINTS = 17
+
 
 
 config.TRAIN = edict()
@@ -69,6 +64,9 @@ config.TRAIN.wd = 0.0005
 config.TRAIN.begin_epoch = 0
 config.TRAIN.end_epoch = 0
 config.TRAIN.model_prefix = ''
+config.TRAIN.frequent = 20
+config.TRAIN.kvstore = 'device'
+config.TRAIN.SCALES = [(600, 1000)]  # first is scale (the shorter side); second is max size
 
 config.TRAIN.ALTERNATE = edict()
 config.TRAIN.ALTERNATE.RPN_BATCH_IMAGES = 0
@@ -143,9 +141,11 @@ config.TRAIN.BBOX_NORMALIZATION_PRECOMPUTED = False
 config.TRAIN.BBOX_MEANS = (0.0, 0.0, 0.0, 0.0)
 config.TRAIN.BBOX_STDS = (0.1, 0.1, 0.2, 0.2)
 
-config.TEST = edict()
+
 
 # R-CNN testing
+config.TEST = edict()
+
 # use rpn to generate proposal
 config.TEST.HAS_RPN = False
 # size of images for each device
@@ -187,9 +187,7 @@ def update_config(config_file):
                     for vk, vv in v.items():
                         config[k][vk] = vv
                 else:
-                    if k == 'SCALES' and isinstance(v[0], int):
-                        config[k][0] = (tuple(v))
-                    else:
-                        config[k] = v
+                    config[k] = v
             else:
+                print k
                 raise ValueError("key must exist in config.py")

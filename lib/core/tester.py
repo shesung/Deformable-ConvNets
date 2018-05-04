@@ -150,7 +150,12 @@ def im_detect(predictor, data_batch, data_names, scales, cfg):
             bbox_deltas = batch_bbox_deltas[i]
 
             # post processing
-            pred_boxes = bbox_pred(rois, bbox_deltas)
+            means = None
+            stds  = None
+            if cfg.TRAIN.BBOX_NORMALIZATION_PRECOMPUTED:
+                means = np.array(cfg.TRAIN.BBOX_MEANS)
+                stds  = np.array(cfg.TRAIN.BBOX_STDS)
+            pred_boxes = bbox_pred(rois, bbox_deltas, means=means, stds=stds)
             pred_boxes = clip_boxes(pred_boxes, im_shape[-2:])
 
             # we used scaled image & roi to train, so it is necessary to transform them back

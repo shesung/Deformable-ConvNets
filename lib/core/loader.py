@@ -11,9 +11,58 @@ import mxnet as mx
 from mxnet.executor_manager import _split_input_slice
 
 from config.config import config
-from utils.image import tensor_vstack
-from rpn.rpn import get_rpn_testbatch, get_rpn_batch, assign_anchor, assign_pyramid_anchor
+from utils.image import get_image, tensor_vstack
+from rpn.rpn import assign_anchor, assign_pyramid_anchor
 from rcnn import get_rcnn_testbatch, get_rcnn_batch
+
+def get_rpn_testbatch(roidb, cfg):
+    """
+    return a dict of testbatch
+    :param roidb: ['image', 'flipped']
+    :return: data, label, im_info
+    """
+    # assert len(roidb) == 1, 'Single batch only'
+    imgs, roidb = get_image(roidb, cfg, is_train=False)
+    im_array = imgs
+    im_info = [np.array([roidb[i]['im_info']], dtype=np.float32) for i in range(len(roidb))]
+
+    data = [{'data': im_array[i],
+            'im_info': im_info[i]} for i in range(len(roidb))]
+    label = {}
+
+    return data, label, im_info
+
+
+def get_rpn_batch(roidb, cfg):
+    """
+    prototype for rpn batch: data, im_info, gt_boxes
+    :param roidb: ['image', 'flipped'] + ['gt_boxes', 'boxes', 'gt_classes']
+    :return: data, label
+    """
+    assert len(roidb) == 1, 'Single batch only'
+    imgs, roidb = get_image(roidb, cfg)
+    im_array = imgs[0]
+    im_info = np.array([roidb[0]['im_info']], dtype=np.float32)
+
+    # gt boxes: (x1, y1, x2, y2, cls)
+    if roidb[0]['gt_classes'].size > 0:
+        gt_inds = np.where(roidb[0]['gt_classes'] != 0)[0]
+        gt_boxes = np.empty((roidb[0]['boxes'].shape[0], 5), dtype=np.float32)
+        gt_boxes[:, 0:4] = roidb[0]['boxes'][gt_inds, :]
+        gt_boxes[:, 4] = roidb[0]['gt_classes'][gt_inds]
+        if cfg.network.PREDICT_KEYPOINTS:
+            gt_kps = roidb[0]['keypoints'][gt_inds, :].astype(np.float32)
+    else:
+        gt_boxes = np.empty((0, 5), dtype=np.float32)
+        gt_kps = np.empty((0, 3*cfg.dataset.NUM_KEYPOINTS), dtype=np.float32)
+
+    data = {'data': im_array,
+            'im_info': im_info}
+    label = {'gt_boxes': gt_boxes}
+    if cfg.network.PREDICT_KEYPOINTS:
+        label['gt_kps'] = gt_kps
+
+    return data, label
 
 
 def par_assign_anchor_wrapper(cfg, iroidb, feat_sym, feat_strides, anchor_scales, anchor_ratios, allowed_border):
