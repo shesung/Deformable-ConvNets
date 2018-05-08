@@ -1,7 +1,7 @@
 ---
 output_path: "./output/coco"
 symbol: resnet_light
-gpus: '0,1,2,3'
+gpus: '0'
 CLASS_AGNOSTIC: true
 network:
   NUM_LAYERS: 34
@@ -34,8 +34,8 @@ TRAIN:
   SCALES: [[640,1280], [656,1280], [672,1280], [688, 1280], [704,1280], [720,1280], [736,1280], [752, 1280], [768,1280], [784, 1280], [800, 1280]] 
   frequent: 100
   kvstore: device
-  lr: 0.005
-  lr_step: '6,8'
+  lr: 0.002
+  lr_step: '4,5'
   warmup: true
   warmup_lr: 0.00005
   # typically we will use 8000 warmup step for single GPU for COCO
@@ -43,7 +43,7 @@ TRAIN:
   wd: 0.0001
   momentum: 0.9
   begin_epoch: 0
-  end_epoch: 9
+  end_epoch: 6
   model_prefix: 'resnet_34_light'
   # whether resume training
   RESUME: false
@@ -98,7 +98,7 @@ TRAIN:
   RPN_POST_NMS_TOP_N: 300
   RPN_MIN_SIZE: 1
   # approximate bounding box regression
-  BBOX_NORMALIZATION_PRECOMPUTED: false
+  BBOX_NORMALIZATION_PRECOMPUTED: true
   BBOX_MEANS:
   - 0.0
   - 0.0
@@ -110,6 +110,7 @@ TRAIN:
   - 0.2
   - 0.2
 TEST:
+  IMAGES_PER_GPU: 4
   SCALES: [[800,1280]]
   # use rpn to generate proposal
   HAS_RPN: true
@@ -123,6 +124,6 @@ TEST:
   RPN_MIN_SIZE: 1
   # RCNN nms
   NMS: 0.3
-  test_epoch: 9
+  test_epoch: 6
   max_per_image: 100
 

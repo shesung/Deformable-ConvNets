@@ -48,6 +48,7 @@ config.dataset.root_path = './data'
 config.dataset.dataset_path = './data/VOCdevkit'
 config.dataset.NUM_CLASSES = 21
 config.dataset.NUM_KEYPOINTS = 17
+config.dataset.SORT_BY_ASPECT_RATIO = True
 
 
 
@@ -150,6 +151,7 @@ config.TEST = edict()
 config.TEST.HAS_RPN = False
 # size of images for each device
 config.TEST.BATCH_IMAGES = 1
+config.TEST.IMAGES_PER_GPU = 1
 
 # RPN proposal
 config.TEST.CXX_PROPOSAL = True

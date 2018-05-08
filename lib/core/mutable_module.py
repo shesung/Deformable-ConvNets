@@ -182,7 +182,10 @@ class MutableModule(BaseModule):
                             logger=self.logger, context=self._context,
                             work_load_list=self._work_load_list,
                             fixed_param_names=self._fixed_param_names)
-            module.bind(data_batch.provide_data, data_batch.provide_label, self._curr_module.for_training,
+            provide_label = data_batch.provide_label
+            if data_batch.provide_label is not None and len(data_batch.provide_label) == 0:
+                provide_label = None
+            module.bind(data_batch.provide_data, provide_label, self._curr_module.for_training,
                         self._curr_module.inputs_need_grad, force_rebind=False,
                         shared_module=self._curr_module)
             self._curr_module = module

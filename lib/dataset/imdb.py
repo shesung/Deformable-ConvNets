@@ -382,3 +382,14 @@ class IMDB(object):
             a[i]['max_classes'] = np.hstack((a[i]['max_classes'], b[i]['max_classes']))
             a[i]['max_overlaps'] = np.hstack((a[i]['max_overlaps'], b[i]['max_overlaps']))
         return a
+
+    def sort_index_by_aspect_ratio(self):
+        ratios = []
+        for index in self.image_set_index:
+            im = Image.open(self.image_path_from_index(index))
+            width, height = im.size
+            ratios.append(float(width)/float(height))
+        sorted_ids = sorted(range(len(ratios)), key=lambda i:ratios[i])
+        print [ratios[i] for i in sorted_ids[:5] + sorted_ids[-5:]] ###
+        new_image_set_index = [self.image_set_index[i] for i in sorted_ids]
+        self.image_set_index = new_image_set_index

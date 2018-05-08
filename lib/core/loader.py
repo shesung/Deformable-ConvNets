@@ -14,23 +14,35 @@ from config.config import config
 from utils.image import get_image, tensor_vstack
 from rpn.rpn import assign_anchor, assign_pyramid_anchor
 from rcnn import get_rcnn_testbatch, get_rcnn_batch
+import time
 
-def get_rpn_testbatch(roidb, cfg):
+def get_rpn_testbatch(roidb, batch_size, data_buf, cfg):
     """
     return a dict of testbatch
     :param roidb: ['image', 'flipped']
     :return: data, label, im_info
     """
     # assert len(roidb) == 1, 'Single batch only'
-    imgs, roidb = get_image(roidb, cfg, is_train=False)
-    im_array = imgs
-    im_info = [np.array([roidb[i]['im_info']], dtype=np.float32) for i in range(len(roidb))]
+    t0 = time.time() ###
+    imgs, roidb = get_image(roidb, cfg, is_train=False, use_transform=False)
+    t_image = time.time() -t0 ###
+    t0 = time.time() ###
 
-    data = [{'data': im_array[i],
-            'im_info': im_info[i]} for i in range(len(roidb))]
-    label = {}
+    max_h = max([img.shape[0] for img in imgs])
+    max_w = max([img.shape[1] for img in imgs])
+    batch_data = data_buf[:,:,:max_h,:max_w]
+    batch_im_info = mx.nd.zeros((batch_size, 3))
+    pixel_means = cfg.network.PIXEL_MEANS
+    for i, img in enumerate(imgs):
+        h, w = img.shape[:2]
+        for j in range(3):
+            batch_data[i:i+1, j, :h, :w] = img[:,:,2-j] - pixel_means[2-j]
+        batch_im_info[i, :] = [max_h, max_w, roidb[i]['im_info'][2]]
 
-    return data, label, im_info
+    #print 'get_image:%.3f\tconvert:%.3f' % (t_image, time.time() -t0) ###
+    #print batch_data.shape, batch_im_info.shape ###
+    data = {'data': batch_data, 'im_info': batch_im_info}
+    return data
 
 
 def get_rpn_batch(roidb, cfg):
@@ -110,9 +122,16 @@ class TestLoader(mx.io.DataIter):
 
         # status variable for synchronization between get_data and get_label
         self.cur = 0
-        self.data = None
+        self.data = []
         self.label = []
         self.im_info = None
+
+        # init bufs
+        self.i_buf = 0
+        self.num_buf = 4
+        self.buf_list = []
+        for i in range(self.num_buf):
+            self.buf_list.append(mx.nd.zeros((self.batch_size, 3, 1280, 1280)))
 
         # get first batch to fill in provide_data and provide_label
         self.reset()
@@ -120,24 +139,14 @@ class TestLoader(mx.io.DataIter):
 
     @property
     def provide_data(self):
-        return [[(k, v.shape) for k, v in zip(self.data_name, idata)] for idata in self.data]
+        return [(k, v.shape) for k, v in zip(self.data_name, self.data)]
 
     @property
     def provide_label(self):
-        return [None for _ in range(len(self.data))]
-
-    @property
-    def provide_data_single(self):
-        return [(k, v.shape) for k, v in zip(self.data_name, self.data[0])]
-
-    @property
-    def provide_label_single(self):
-        return None
+        return []
 
     def reset(self):
         self.cur = 0
-        if self.shuffle:
-            np.random.shuffle(self.index)
 
     def iter_next(self):
         return self.cur < self.size
@@ -146,7 +155,7 @@ class TestLoader(mx.io.DataIter):
         if self.iter_next():
             self.get_batch()
             self.cur += self.batch_size
-            return self.im_info, mx.io.DataBatch(data=self.data, label=self.label,
+            return mx.io.DataBatch(data=self.data, label=self.label,
                                    pad=self.getpad(), index=self.getindex(),
                                    provide_data=self.provide_data, provide_label=self.provide_label)
         else:
@@ -166,24 +175,12 @@ class TestLoader(mx.io.DataIter):
         cur_to = min(cur_from + self.batch_size, self.size)
         roidb = [self.roidb[self.index[i]] for i in range(cur_from, cur_to)]
         if self.has_rpn:
-            data, label, im_info = get_rpn_testbatch(roidb, self.cfg)
+            data = get_rpn_testbatch(roidb, self.batch_size, self.buf_list[self.i_buf], self.cfg)
+            self.i_buf = (self.i_buf + 1) % self.num_buf
         else:
-            data, label, im_info = get_rcnn_testbatch(roidb, self.cfg)
+            data = get_rcnn_testbatch(roidb, self.cfg)
+        self.data = [data[name] for name in self.data_name]
 
-        #self.data = [mx.nd.array(np.concatenate([d[name] for d in data], axis=0)) for name in self.data_name]
-        self.data = [[mx.nd.array(idata[name]) for name in self.data_name] for idata in data]
-        self.im_info = im_info
-
-    def get_batch_individual(self):
-        cur_from = self.cur
-        cur_to = min(cur_from + self.batch_size, self.size)
-        roidb = [self.roidb[self.index[i]] for i in range(cur_from, cur_to)]
-        if self.has_rpn:
-            data, label, im_info = get_rpn_testbatch(roidb, self.cfg)
-        else:
-            data, label, im_info = get_rcnn_testbatch(roidb, self.cfg)
-        self.data = [mx.nd.array(data[name]) for name in self.data_name]
-        self.im_info = im_info
 
 
 class ROIIter(mx.io.DataIter):

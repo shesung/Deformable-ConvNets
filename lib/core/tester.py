@@ -12,11 +12,10 @@ import time
 import mxnet as mx
 import numpy as np
 
-from module import MutableModule
+from mutable_module import MutableModule
 from utils import image
 from bbox.bbox_transform import bbox_pred, clip_boxes
 from nms.nms import py_nms_wrapper, cpu_nms_wrapper, gpu_nms_wrapper
-from utils.PrefetchingIter import PrefetchingIter
 
 
 class Predictor(object):
@@ -29,10 +28,22 @@ class Predictor(object):
         self._mod.bind(provide_data, provide_label, for_training=False)
         self._mod.init_params(arg_params=arg_params, aux_params=aux_params)
 
+        # warm up
+        shape_dict  = dict(provide_data)
+        max_size = max(shape_dict['data'])
+        shape_dict['data'] = (shape_dict['data'][0], shape_dict['data'][1], max_size, max_size)
+        data = [mx.nd.zeros(shape_dict[k]) for k in data_names]
+        for j in xrange(2):
+            data_batch = mx.io.DataBatch(data=data, label=[], pad=0, index=0,
+                                         provide_data=[(k, shape_dict[k]) for k in data_names],
+                                         provide_label=[])
+            self._mod.forward(data_batch)
+
     def predict(self, data_batch):
         self._mod.forward(data_batch)
-        # [dict(zip(self._mod.output_names, _)) for _ in zip(*self._mod.get_outputs(merge_multi_context=False))]
-        return [dict(zip(self._mod.output_names, _)) for _ in zip(*self._mod.get_outputs(merge_multi_context=False))]
+        num_ctx = len(self._mod._context)
+        outputs = self._mod.get_outputs(merge_multi_context=False)
+        return [dict(zip(self._mod.output_names, [out[i] for out in outputs])) for i in range(num_ctx)]
 
 
 def im_proposal(predictor, data_batch, data_names, scales):
@@ -83,7 +94,7 @@ def generate_proposals(predictor, test_data, imdb, cfg, vis=False, thresh=0.):
         scores_all, boxes_all, data_dict_all = im_proposal(predictor, data_batch, data_names, scales)
         t2 = time.time() - t
         t = time.time()
-        for delta, (scores, boxes, data_dict, scale) in enumerate(zip(scores_all, boxes_all, data_dict_all, scales)):
+        for delta, (scores, boxes, data_dict) in enumerate(zip(scores_all, boxes_all, data_dict_all)):
             # assemble proposals
             dets = np.hstack((boxes, scores))
             original_boxes.append(dets)
@@ -121,33 +132,42 @@ def generate_proposals(predictor, test_data, imdb, cfg, vis=False, thresh=0.):
     return imdb_boxes
 
 
-def im_detect(predictor, data_batch, data_names, scales, cfg):
+def im_detect(predictor, data_batch, data_names, cfg):
     output_all = predictor.predict(data_batch)
 
-    data_dict_all = [dict(zip(data_names, idata)) for idata in data_batch.data]
+    N = cfg.TEST.IMAGES_PER_GPU
+    data_dict = dict(zip(data_names, data_batch.data))
+    batched_im_info = data_dict['im_info'].asnumpy()
     scores_all = []
     pred_boxes_all = []
     pred_kps_all = []
-    for output, data_dict in zip(output_all, data_dict_all):
+    for i, output in enumerate(output_all):
         if cfg.TEST.HAS_RPN:
             batch_rois = output['rois_output'].asnumpy()
         else:
             rois = data_dict['rois'].asnumpy().reshape((-1, 5))[:, 1:]
-        im_shape = data_dict['data'].shape
 
         # save output
         batch_scores = output['cls_prob_reshape_output'].asnumpy()
+        batch_scores = batch_scores.reshape((N, -1, batch_scores.shape[2]))
         batch_bbox_deltas = output['bbox_pred_reshape_output'].asnumpy()
-        batch_im_info = data_dict['im_info'].asnumpy()
+        batch_bbox_deltas = batch_bbox_deltas.reshape((N, -1, batch_bbox_deltas.shape[2]))
+        if cfg.network.PREDICT_KEYPOINTS:
+            kps_deltas = output['kps_pos_pred_reshape_output'].asnumpy()           # [N*R, 2*K, G, G]
+            kps_deltas = kps_deltas.reshape([N, -1] + list(kps_deltas.shape[1:])) # [N, R, 2*K, G, G]
+            kps_probs = output['kps_prob_output'].asnumpy()            # [N*R*K, G*G]
+            kps_probs = kps_probs.reshape((N, -1, kps_probs.shape[1])) # [N, R*K, G*G]
 
-        for i in range(cfg.TEST.BATCH_IMAGES):
-            scale = batch_im_info[i, 2]
+        for j in range(N):
+            im_info  = batched_im_info[i*N + j]
+            im_shape = im_info[:2]
+            scale    = im_info[2]
             if scale < 1e-6:
-                break
-            indices = np.where(batch_rois[:,0] == i)[0]
+                continue
+            indices = np.where(batch_rois[:,0] == j)[0]
             rois = batch_rois[indices, 1:]
-            scores = batch_scores[i]
-            bbox_deltas = batch_bbox_deltas[i]
+            scores = batch_scores[j]
+            bbox_deltas = batch_bbox_deltas[j]
 
             # post processing
             means = None
@@ -156,7 +176,7 @@ def im_detect(predictor, data_batch, data_names, scales, cfg):
                 means = np.array(cfg.TRAIN.BBOX_MEANS)
                 stds  = np.array(cfg.TRAIN.BBOX_STDS)
             pred_boxes = bbox_pred(rois, bbox_deltas, means=means, stds=stds)
-            pred_boxes = clip_boxes(pred_boxes, im_shape[-2:])
+            pred_boxes = clip_boxes(pred_boxes, im_shape)
 
             # we used scaled image & roi to train, so it is necessary to transform them back
             pred_boxes = pred_boxes / scale
@@ -164,16 +184,14 @@ def im_detect(predictor, data_batch, data_names, scales, cfg):
             scores_all.append(scores)
             pred_boxes_all.append(pred_boxes)
 
-        if cfg.network.PREDICT_KEYPOINTS:
-            assert cfg.TEST.BATCH_IMAGES == 1, "only support batch_size=1"
-            kps_deltas = output['kps_pos_pred_reshape_output'].asnumpy() # [N, 2*K, G, G]
-            kps_probs = output['kps_prob_output'].asnumpy()              # [N*K, G*G]
-            pred_kps = predict_keypoints(rois, kps_probs, kps_deltas, scale=scale)
-            pred_kps_all.append(pred_kps)
+            if cfg.network.PREDICT_KEYPOINTS:
+                pred_kps = predict_keypoints(rois, kps_probs[j], kps_deltas[j], scale=scale)
+                pred_kps_all.append(pred_kps)
 
     if cfg.network.PREDICT_KEYPOINTS:
-        return scores_all, pred_boxes_all, pred_kps_all, data_dict_all
-    return scores_all, pred_boxes_all, data_dict_all
+        return scores_all, pred_boxes_all, pred_kps_all
+    return scores_all, pred_boxes_all
+
 
 def predict_keypoints(rois, kps_probs, kps_deltas, scale=1.0):
     '''
@@ -216,112 +234,6 @@ def predict_keypoints(rois, kps_probs, kps_deltas, scale=1.0):
     pred_kps = np.concatenate([pred_xy, argmax_probs], axis=1)     # [N*K, 3]
 
     return pred_kps.reshape([N, K*3])
-
-
-def pred_eval(predictor, test_data, imdb, cfg, vis=False, thresh=1e-3, logger=None, ignore_cache=True):
-    """
-    wrapper for calculating offline validation for faster data analysis
-    in this example, all threshold are set by hand
-    :param predictor: Predictor
-    :param test_data: data iterator, must be non-shuffle
-    :param imdb: image database
-    :param vis: controls visualization
-    :param thresh: valid detection threshold
-    :return:
-    """
-
-    det_file = os.path.join(imdb.result_path, imdb.name + '_detections.pkl')
-    if os.path.exists(det_file) and not ignore_cache:
-        with open(det_file, 'rb') as fid:
-            cache_res = cPickle.load(fid)
-            all_boxes = cache_res['all_boxes']
-            all_keypoints = cache_res.get('all_keypoints')
-        info_str = imdb.evaluate_detections(all_boxes, all_keypoints=all_keypoints)
-        if logger:
-            logger.info('evaluate detections: \n{}'.format(info_str))
-        return
-
-    assert vis or not test_data.shuffle
-    data_names = [k[0] for k in test_data.provide_data[0]]
-
-    if not isinstance(test_data, PrefetchingIter):
-        test_data = PrefetchingIter(test_data)
-
-    nms = py_nms_wrapper(cfg.TEST.NMS)
-
-    # limit detections to max_per_image over all classes
-    max_per_image = cfg.TEST.max_per_image
-
-    num_images = imdb.num_images
-    # all detections are collected into:
-    #    all_boxes[cls][image] = N x 5 array of detections in
-    #    (x1, y1, x2, y2, score)
-    all_boxes = [[np.array([]) for _ in range(num_images)]
-                 for _ in range(imdb.num_classes)]
-    all_keypoints = None
-    if cfg.network.PREDICT_KEYPOINTS:
-        all_keypoints = [[np.array([]) for _ in range(num_images)]
-                         for _ in range(imdb.num_classes)]
-
-    idx = 0
-    data_time, net_time, post_time = 0.0, 0.0, 0.0
-    t = time.time()
-    for im_info, data_batch in test_data:
-        t1 = time.time() - t
-        t = time.time()
-
-        scales = [iim_info[0, 2] for iim_info in im_info]
-        rets = im_detect(predictor, data_batch, data_names, scales, cfg)
-        scores_all = rets[0]
-        boxes_all = rets[1]
-        data_dict_all = rets[-1]
-        if cfg.network.PREDICT_KEYPOINTS:
-            pred_kps_all = rets[2]
-
-        t2 = time.time() - t
-        t = time.time()
-        for delta, (scores, boxes, data_dict) in enumerate(zip(scores_all, boxes_all, data_dict_all)):
-            for j in range(1, imdb.num_classes):
-                indexes = np.where(scores[:, j] > thresh)[0]
-                cls_scores = scores[indexes, j, np.newaxis]
-                cls_boxes = boxes[indexes, 4:8] if cfg.CLASS_AGNOSTIC else boxes[indexes, j * 4:(j + 1) * 4]
-                cls_dets = np.hstack((cls_boxes, cls_scores))
-                keep = nms(cls_dets)
-                all_boxes[j][idx+delta] = cls_dets[keep, :]
-                if cfg.network.PREDICT_KEYPOINTS:
-                    all_keypoints[j][idx+delta] = pred_kps_all[delta][indexes, :][keep, :]
-
-            if max_per_image > 0:
-                image_scores = np.hstack([all_boxes[j][idx+delta][:, -1]
-                                          for j in range(1, imdb.num_classes)])
-                if len(image_scores) > max_per_image:
-                    image_thresh = np.sort(image_scores)[-max_per_image]
-                    for j in range(1, imdb.num_classes):
-                        keep = np.where(all_boxes[j][idx+delta][:, -1] >= image_thresh)[0]
-                        all_boxes[j][idx+delta] = all_boxes[j][idx+delta][keep, :]
-                        if cfg.network.PREDICT_KEYPOINTS:
-                            all_keypoints[j][idx+delta] = all_keypoints[j][idx+delta][keep, :]
-
-            if vis:
-                boxes_this_image = [[]] + [all_boxes[j][idx+delta] for j in range(1, imdb.num_classes)]
-                vis_all_detection(data_dict['data'].asnumpy(), boxes_this_image, imdb.classes, scales[delta], cfg)
-
-        idx += test_data.batch_size
-        t3 = time.time() - t
-        t = time.time()
-        data_time += t1
-        net_time += t2
-        post_time += t3
-        print 'testing {}/{} data {:.4f}s net {:.4f}s post {:.4f}s'.format(idx, imdb.num_images, data_time / idx * test_data.batch_size, net_time / idx * test_data.batch_size, post_time / idx * test_data.batch_size)
-        if logger:
-            logger.info('testing {}/{} data {:.4f}s net {:.4f}s post {:.4f}s'.format(idx, imdb.num_images, data_time / idx * test_data.batch_size, net_time / idx * test_data.batch_size, post_time / idx * test_data.batch_size))
-
-    with open(det_file, 'wb') as f:
-        cPickle.dump({'all_boxes':all_boxes, 'all_keypoints':all_keypoints}, f, protocol=cPickle.HIGHEST_PROTOCOL)
-
-    info_str = imdb.evaluate_detections(all_boxes, all_keypoints=all_keypoints)
-    if logger:
-        logger.info('evaluate detections: \n{}'.format(info_str))
 
 
 def vis_all_detection(im_array, detections, class_names, scale, cfg, threshold=1e-3):
