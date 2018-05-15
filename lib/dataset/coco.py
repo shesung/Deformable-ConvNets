@@ -130,9 +130,11 @@ class coco(IMDB):
         if os.path.exists(cache_file):
             with open(cache_file, 'rb') as fid:
                 roidb = cPickle.load(fid)
+            self.image_set_index = [r['index'] for r in roidb]
             print '{} gt roidb loaded from {}'.format(self.name, cache_file)
             return roidb
 
+        self.sort_index_by_aspect_ratio()
         gt_roidb = [self._load_coco_annotation(index) for index in self.image_set_index]
         with open(cache_file, 'wb') as fid:
             cPickle.dump(gt_roidb, fid, cPickle.HIGHEST_PROTOCOL)
@@ -191,6 +193,7 @@ class coco(IMDB):
                 keypoints[ix, :] = obj['keypoints']
 
         roi_rec = {'image': self.image_path_from_index(index),
+                   'index': index,
                    'height': height,
                    'width': width,
                    'boxes': boxes,

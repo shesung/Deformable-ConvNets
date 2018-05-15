@@ -1,7 +1,7 @@
 ---
 output_path: "./output/coco"
 symbol: resnet_34_kps
-gpus: '0'
+gpus: '0,1,2,3'
 CLASS_AGNOSTIC: true
 network:
   #pretrained: "./model/pretrained_model/resnet-34"

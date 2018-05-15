@@ -48,6 +48,7 @@ config.dataset.root_path = './data'
 config.dataset.dataset_path = './data/VOCdevkit'
 config.dataset.NUM_CLASSES = 21
 config.dataset.NUM_KEYPOINTS = 17
+config.dataset.MAX_BOXES_PER_IMAGE = 100
 config.dataset.SORT_BY_ASPECT_RATIO = True
 
 
@@ -99,6 +100,7 @@ config.TRAIN.SHUFFLE = True
 config.TRAIN.ENABLE_OHEM = False
 # size of images for each device, 2 for rcnn, 1 for rpn and e2e
 config.TRAIN.BATCH_IMAGES = 2
+config.TRAIN.IMAGES_PER_GPU = 1
 # e2e changes behavior of anchor loader and metric
 config.TRAIN.END2END = False
 # group images with similar aspect ratio

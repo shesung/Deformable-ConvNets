@@ -236,6 +236,7 @@ class resnet_light(Symbol):
 
         # config alias for convenient
         num_classes = cfg.dataset.NUM_CLASSES
+        batch_size = cfg.TRAIN.IMAGES_PER_GPU  if is_train else cfg.TEST.IMAGES_PER_GPU
         num_reg_classes = (2 if cfg.CLASS_AGNOSTIC else num_classes)
         num_anchors = cfg.network.NUM_ANCHORS
 
@@ -254,14 +255,12 @@ class resnet_light(Symbol):
             gt_kps = mx.sym.Variable(name="gt_kps")
 
             # ROI proposal target
-            gt_boxes_reshape = mx.sym.Reshape(data=gt_boxes, shape=(-1, 5), name='gt_boxes_reshape')
             rois, label, bbox_target, bbox_weight = mx.sym.Custom(rois=rois,
-                                                                  gt_boxes=gt_boxes_reshape,
+                                                                  gt_boxes=gt_boxes,
                                                                   op_type='proposal_target',
                                                                   num_classes=num_reg_classes,
-                                                                  batch_images=cfg.TRAIN.BATCH_IMAGES,
+                                                                  batch_images=batch_size,
                                                                   batch_rois=cfg.TRAIN.BATCH_ROIS,
-                                                                  cfg=cPickle.dumps(cfg),
                                                                   fg_fraction=cfg.TRAIN.FG_FRACTION)
 
         # light head
@@ -291,10 +290,11 @@ class resnet_light(Symbol):
 
         if is_train:
             if cfg.TRAIN.ENABLE_OHEM:
+                ohem_batch_size = cfg.TRAIN.BATCH_ROIS_OHEM * batch_size
                 labels_ohem, bbox_weights_ohem = mx.sym.Custom(op_type='BoxAnnotatorOHEM',
                                                                num_classes=num_classes,
                                                                num_reg_classes=num_reg_classes,
-                                                               roi_per_img=cfg.TRAIN.BATCH_ROIS_OHEM,
+                                                               roi_per_img=ohem_batch_size,
                                                                cls_score=cls_score,
                                                                bbox_pred=bbox_pred,
                                                                labels=label,
@@ -305,30 +305,31 @@ class resnet_light(Symbol):
                 bbox_loss_ = bbox_weights_ohem * mx.sym.smooth_l1(name='bbox_loss_', scalar=1.0,
                                                                   data=(bbox_pred - bbox_target))
                 bbox_loss = mx.sym.MakeLoss(name='bbox_loss', data=bbox_loss_,
-                                            grad_scale=1.0 / cfg.TRAIN.BATCH_ROIS_OHEM)
+                                            grad_scale=1.0 / ohem_batch_size)
                 rcnn_label = labels_ohem
             else:
+                roi_batch_size = cfg.TRAIN.BATCH_ROIS * batch_size
                 cls_prob = mx.sym.SoftmaxOutput(name='cls_prob', data=cls_score, label=label,
                                                 normalization='valid')
                 bbox_loss_ = bbox_weight * mx.sym.smooth_l1(name='bbox_loss_', scalar=1.0,
                                                             data=(bbox_pred - bbox_target))
                 bbox_loss = mx.sym.MakeLoss(name='bbox_loss', data=bbox_loss_,
-                                            grad_scale=1.0 / cfg.TRAIN.BATCH_ROIS)
+                                            grad_scale=1.0 / roi_batch_size)
                 rcnn_label = label
 
             # reshape output
-            rcnn_label = mx.sym.Reshape(data=rcnn_label, shape=(cfg.TRAIN.BATCH_IMAGES, -1),
+            rcnn_label = mx.sym.Reshape(data=rcnn_label, shape=(batch_size, -1),
                                         name='label_reshape')
-            cls_prob = mx.sym.Reshape(data=cls_prob, shape=(cfg.TRAIN.BATCH_IMAGES, -1, num_classes),
+            cls_prob = mx.sym.Reshape(data=cls_prob, shape=(batch_size, -1, num_classes),
                                       name='cls_prob_reshape')
-            bbox_loss = mx.sym.Reshape(data=bbox_loss, shape=(cfg.TRAIN.BATCH_IMAGES, -1, 4 * num_reg_classes),
+            bbox_loss = mx.sym.Reshape(data=bbox_loss, shape=(batch_size, -1, 4 * num_reg_classes),
                                        name='bbox_loss_reshape')
             group = mx.sym.Group(rpn_syms + [cls_prob, bbox_loss, mx.sym.BlockGrad(rcnn_label)])
         else:
             cls_prob = mx.sym.SoftmaxActivation(name='cls_prob', data=cls_score)
-            cls_prob = mx.sym.Reshape(data=cls_prob, shape=(cfg.TEST.BATCH_IMAGES, -1, num_classes),
+            cls_prob = mx.sym.Reshape(data=cls_prob, shape=(batch_size, -1, num_classes),
                                       name='cls_prob_reshape')
-            bbox_pred = mx.sym.Reshape(data=bbox_pred, shape=(cfg.TEST.BATCH_IMAGES, -1, 4 * num_reg_classes),
+            bbox_pred = mx.sym.Reshape(data=bbox_pred, shape=(batch_size, -1, 4 * num_reg_classes),
                                        name='bbox_pred_reshape')
             group = mx.sym.Group([rois, cls_prob, bbox_pred])
 

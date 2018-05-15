@@ -1,31 +1,8 @@
 ---
-MXNET_VERSION: "mxnet"
 output_path: "./output/coco"
-symbol: resnet_faster2
+symbol: resnet_faster
 gpus: '0,1,2,3'
 CLASS_AGNOSTIC: true
-SCALES:
--
-  - 640
-  - 1280
--
-  - 672
-  - 1280
--
-  - 704
-  - 1280
--
-  - 736
-  - 1280
--
-  - 768
-  - 1280
--
-  - 800
-  - 1280
-default:
-  frequent: 100
-  kvstore: device
 network:
   NUM_LAYERS: 34
   ROIALIGN: true
@@ -43,16 +20,8 @@ network:
   - conv0
   - bn0
   - stage1
-  ANCHOR_RATIOS:
-  - 0.5
-  - 1
-  - 2
-  ANCHOR_SCALES:
-  - 2
-  - 4
-  - 8
-  - 16
-  - 32
+  ANCHOR_RATIOS: [0.5, 1, 2]
+  ANCHOR_SCALES: [2, 4, 8, 16, 32]
   NUM_ANCHORS: 15
 dataset:
   NUM_CLASSES: 2
@@ -63,17 +32,21 @@ dataset:
   test_image_set: keypoints_val2017
   proposal: rpn
 TRAIN:
-  lr: 0.005
-  lr_step: '2,2.66'
+  IMAGES_PER_GPU: 4
+  SCALES: [[640,1280], [656,1280], [672,1280], [688, 1280], [704,1280], [720,1280], [736,1280], [752, 1280], [768,1280], [784, 1280], [800, 1280]] 
+  frequent: 100
+  kvstore: device
+  lr: 0.01
+  lr_step: '3,5'
   warmup: true
   warmup_lr: 0.00005
   # typically we will use 8000 warmup step for single GPU for COCO
-  warmup_step: 2000
+  warmup_step: 1000
   wd: 0.0001
   momentum: 0.9
   begin_epoch: 0
-  end_epoch: 3
-  model_prefix: 'resnet_34_faster2'
+  end_epoch: 6
+  model_prefix: 'resnet_34_faster'
   # whether resume training
   RESUME: false
   # whether flip image
@@ -139,10 +112,8 @@ TRAIN:
   - 0.2
   - 0.2
 TEST:
-  SCALES:
-  -
-    - 800
-    - 1280
+  IMAGES_PER_GPU: 4
+  SCALES: [[800,1280]]
   # use rpn to generate proposal
   HAS_RPN: true
   # size of images for each device
@@ -155,6 +126,6 @@ TEST:
   RPN_MIN_SIZE: 1
   # RCNN nms
   NMS: 0.3
-  test_epoch: 3
+  test_epoch: 6
   max_per_image: 100
 

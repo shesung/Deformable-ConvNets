@@ -92,6 +92,8 @@ def pred_eval(predictor, test_data, imdb, cfg, vis=False, thresh=1e-3, logger=No
         t2 = time.time() - t
         t = time.time()
         for delta, (scores, boxes) in enumerate(zip(scores_all, boxes_all)):
+            if idx+delta >= num_images:
+                break
             for j in range(1, imdb.num_classes):
                 indexes = np.where(scores[:, j] > thresh)[0]
                 cls_scores = scores[indexes, j, np.newaxis]
@@ -149,7 +151,6 @@ def test_rcnn(cfg, dataset, image_set, root_path, dataset_path,
         sym_instance = eval(cfg.symbol + '.' + cfg.symbol)()
         sym = sym_instance.get_symbol(cfg, is_train=False)
         imdb = eval(dataset)(image_set, root_path, dataset_path, result_path=output_path)
-        imdb.sort_index_by_aspect_ratio()
         roidb = imdb.gt_roidb()
     else:
         sym_instance = eval(cfg.symbol + '.' + cfg.symbol)()
@@ -170,7 +171,7 @@ def test_rcnn(cfg, dataset, image_set, root_path, dataset_path,
     sym_instance.check_parameter_shapes(arg_params, aux_params, data_shape_dict, is_train=False)
 
     # decide maximum shape
-    data_names = test_data.data_name
+    data_names = test_data.data_names
     label_names = None
 
     # create predictor

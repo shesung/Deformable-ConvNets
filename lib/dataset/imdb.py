@@ -201,7 +201,8 @@ class IMDB(object):
         """
         print 'append flipped images to roidb'
         assert self.num_images == len(roidb)
-        for i in range(self.num_images):
+        flipped_roidb = []
+        for i in range(self.num_images)[::-1]:
             roi_rec = roidb[i]
             boxes = roi_rec['boxes'].copy()
             oldx1 = boxes[:, 0].copy()
@@ -237,9 +238,9 @@ class IMDB(object):
                 [filename, extension] = os.path.splitext(roi_rec['cache_seg_inst'])
                 entry['cache_seg_inst'] = os.path.join(filename + '_flip' + extension)
 
-            roidb.append(entry)
-
-        self.image_set_index *= 2
+            flipped_roidb.append(entry)
+        self.image_set_index = self.image_set_index + self.image_set_index[::-1]
+        roidb.extend(flipped_roidb)
         return roidb
 
     def flip_and_save(self, image_path):
@@ -390,6 +391,6 @@ class IMDB(object):
             width, height = im.size
             ratios.append(float(width)/float(height))
         sorted_ids = sorted(range(len(ratios)), key=lambda i:ratios[i])
-        print [ratios[i] for i in sorted_ids[:5] + sorted_ids[-5:]] ###
+        print 'sorted aspect ratios:', [ratios[i] for i in sorted_ids[::len(ratios)/10]] ###
         new_image_set_index = [self.image_set_index[i] for i in sorted_ids]
         self.image_set_index = new_image_set_index

@@ -42,11 +42,11 @@ import mxnet as mx
 from symbols import *
 from core import callback, metric
 from core.loader import AnchorLoader, PyramidAnchorLoader
-from core.module import MutableModule
+from core.mutable_module import MutableModule
 from utils.create_logger import create_logger
 from utils.load_data import load_gt_roidb, merge_roidb, filter_roidb
 from utils.load_model import load_param
-from utils.PrefetchingIter import PrefetchingIter
+from mxnet.io import PrefetchingIter
 from utils.lr_scheduler import WarmupMultiFactorScheduler
 
 
@@ -76,8 +76,7 @@ def train_net(args, ctx, pretrained, epoch, prefix, begin_epoch, end_epoch, lr, 
     sym = sym_instance.get_symbol(config, is_train=True)
 
     # setup multi-gpu
-    batch_size = len(ctx)
-    input_batch_size = config.TRAIN.BATCH_IMAGES * batch_size
+    batch_size = config.TRAIN.IMAGES_PER_GPU * len(ctx)
 
     # print config
     pprint.pprint(config)
@@ -92,25 +91,21 @@ def train_net(args, ctx, pretrained, epoch, prefix, begin_epoch, end_epoch, lr, 
     roidb = filter_roidb(roidb, config)
     # load training data
     if config.network.MULTI_RPN:
+        assert Fasle, 'still developing' ###
         num_layers = len(config.network.MULTI_RPN_STRIDES)
         rpn_syms = [sym.get_internals()['rpn%d_cls_score_output'% l] for l in range(num_layers)]
-        train_data = PyramidAnchorLoader(rpn_syms, roidb, config, batch_size=input_batch_size, shuffle=config.TRAIN.SHUFFLE,
+        train_data = PyramidAnchorLoader(rpn_syms, roidb, config, batch_size=batch_size, shuffle=config.TRAIN.SHUFFLE,
                                          ctx=ctx, feat_strides=config.network.MULTI_RPN_STRIDES, anchor_scales=config.network.ANCHOR_SCALES,
                                          anchor_ratios=config.network.ANCHOR_RATIOS, aspect_grouping=config.TRAIN.ASPECT_GROUPING,
                                          allowed_border=np.inf)
     else:
         feat_sym = sym.get_internals()['rpn_cls_score_output']
-        train_data = AnchorLoader(feat_sym, roidb, config, batch_size=input_batch_size, shuffle=config.TRAIN.SHUFFLE, ctx=ctx,
+        train_data = AnchorLoader(feat_sym, roidb, config, batch_size=batch_size, shuffle=config.TRAIN.SHUFFLE, ctx=ctx,
                                   feat_stride=config.network.RPN_FEAT_STRIDE, anchor_scales=config.network.ANCHOR_SCALES,
                                   anchor_ratios=config.network.ANCHOR_RATIOS, aspect_grouping=config.TRAIN.ASPECT_GROUPING)
 
     # infer max shape
-    max_data_shape = [('data', (config.TRAIN.BATCH_IMAGES, 3, max([v[0] for v in config.TRAIN.SCALES]), max([v[1] for v in config.TRAIN.SCALES])))]
-    max_data_shape, max_label_shape = train_data.infer_shape(max_data_shape)
-    max_data_shape.append(('gt_boxes', (config.TRAIN.BATCH_IMAGES, 100, 5)))
-    print('providing maximum shape', max_data_shape, max_label_shape)
-
-    data_shape_dict = dict(train_data.provide_data_single + train_data.provide_label_single)
+    data_shape_dict = dict(train_data.provide_data + train_data.provide_label)
     pprint.pprint(data_shape_dict)
     sym_instance.infer_shape(data_shape_dict)
 
@@ -127,12 +122,12 @@ def train_net(args, ctx, pretrained, epoch, prefix, begin_epoch, end_epoch, lr, 
 
     # create solver
     fixed_param_prefix = config.network.FIXED_PARAMS
-    data_names = [k[0] for k in train_data.provide_data_single]
-    label_names = [k[0] for k in train_data.provide_label_single]
-
-    mod = MutableModule(sym, data_names=data_names, label_names=label_names,
-                        logger=logger, context=ctx, max_data_shapes=[max_data_shape for _ in range(batch_size)],
-                        max_label_shapes=[max_label_shape for _ in range(batch_size)], fixed_param_prefix=fixed_param_prefix)
+    mod = MutableModule(sym,
+                        train_data.data_names,
+                        train_data.label_names,
+                        context=ctx,
+                        logger=logger,
+                        fixed_param_prefix=fixed_param_prefix)
 
     if config.TRAIN.RESUME:
         mod._preload_opt_states = '%s-%04d.states'%(prefix, begin_epoch)
@@ -158,10 +153,9 @@ def train_net(args, ctx, pretrained, epoch, prefix, begin_epoch, end_epoch, lr, 
         eval_metrics.add(kps_pos_loss)
 
     # callback
-    batch_end_callback = callback.Speedometer(train_data.batch_size, frequent=args.frequent)
+    batch_end_callback = callback.Speedometer(batch_size, frequent=args.frequent)
     means = np.tile(np.array(config.TRAIN.BBOX_MEANS), 2 if config.CLASS_AGNOSTIC else config.dataset.NUM_CLASSES)
     stds = np.tile(np.array(config.TRAIN.BBOX_STDS), 2 if config.CLASS_AGNOSTIC else config.dataset.NUM_CLASSES)
-    #epoch_end_callback = [mx.callback.module_checkpoint(mod, prefix, period=1, save_optimizer_states=True), callback.do_checkpoint(prefix, means, stds)]
     epoch_end_callback = [mx.callback.do_checkpoint(prefix)]
     # decide learning rate
     base_lr = lr
@@ -180,14 +174,16 @@ def train_net(args, ctx, pretrained, epoch, prefix, begin_epoch, end_epoch, lr, 
                         'rescale_grad': 1.0,
                         'clip_gradient': None}
 
-    if not isinstance(train_data, PrefetchingIter):
-        train_data = PrefetchingIter(train_data)
+    #if not isinstance(train_data, PrefetchingIter):
+    #    train_data = PrefetchingIter(train_data)
 
     # train
     mod.fit(train_data, eval_metric=eval_metrics, epoch_end_callback=epoch_end_callback,
             batch_end_callback=batch_end_callback, kvstore=config.TRAIN.kvstore,
             optimizer='sgd', optimizer_params=optimizer_params,
             arg_params=arg_params, aux_params=aux_params, begin_epoch=begin_epoch, num_epoch=end_epoch)
+
+    train_data.terminate()
 
 
 def main():

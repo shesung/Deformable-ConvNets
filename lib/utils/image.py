@@ -7,7 +7,7 @@ from bbox.bbox_transform import clip_boxes
 
 
 # TODO: This two functions should be merged with individual data loader
-def get_image(roidb, config, is_train=True, use_transform=True):
+def get_image(roidb, target_size, max_size, stride=0):
     """
     preprocess image and return processed roidb
     :param roidb: a list of roidb
@@ -27,16 +27,8 @@ def get_image(roidb, config, is_train=True, use_transform=True):
         if roidb[i]['flipped']:
             im = im[:, ::-1, :]
         new_rec = roi_rec.copy()
-        if is_train:
-            scale_ind = random.randrange(len(config.TRAIN.SCALES))
-            target_size = config.TRAIN.SCALES[scale_ind][0]
-            max_size = config.TRAIN.SCALES[scale_ind][1]
-        else:
-            target_size = config.TEST.SCALES[0][0]
-            max_size = config.TEST.SCALES[0][1]
-        im, im_scale = resize(im, target_size, max_size, stride=config.network.IMAGE_STRIDE)
-        im_tensor = transform(im, config.network.PIXEL_MEANS) if use_transform else im
-        processed_ims.append(im_tensor)
+        im, im_scale = resize(im, target_size, max_size, stride=stride)
+        processed_ims.append(im)
         im_info = [im.shape[0], im.shape[1], im_scale]
         new_rec['boxes'] = clip_boxes(np.round(roi_rec['boxes'].copy() * im_scale), im_info[:2])
         new_rec['im_info'] = im_info

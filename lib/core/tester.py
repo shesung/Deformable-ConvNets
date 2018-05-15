@@ -135,7 +135,6 @@ def generate_proposals(predictor, test_data, imdb, cfg, vis=False, thresh=0.):
 def im_detect(predictor, data_batch, data_names, cfg):
     output_all = predictor.predict(data_batch)
 
-    N = cfg.TEST.IMAGES_PER_GPU
     data_dict = dict(zip(data_names, data_batch.data))
     batched_im_info = data_dict['im_info'].asnumpy()
     scores_all = []
@@ -148,6 +147,7 @@ def im_detect(predictor, data_batch, data_names, cfg):
             rois = data_dict['rois'].asnumpy().reshape((-1, 5))[:, 1:]
 
         # save output
+        N = cfg.TEST.IMAGES_PER_GPU
         batch_scores = output['cls_prob_reshape_output'].asnumpy()
         batch_scores = batch_scores.reshape((N, -1, batch_scores.shape[2]))
         batch_bbox_deltas = output['bbox_pred_reshape_output'].asnumpy()

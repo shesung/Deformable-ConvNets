@@ -25,100 +25,11 @@ import numpy.random as npr
 from utils.image import get_image, tensor_vstack
 from bbox.bbox_transform import bbox_overlaps, bbox_transform
 from bbox.bbox_regression import expand_bbox_regression_targets
+from config.config import config as cfg
 
 import time ###
 
-def get_rcnn_testbatch(roidb, cfg):
-    """
-    return a dict of testbatch
-    :param roidb: ['image', 'flipped'] + ['boxes']
-    :return: data, label, im_info
-    """
-    # assert len(roidb) == 1, 'Single batch only'
-    imgs, roidb = get_image(roidb, cfg)
-    im_array = imgs
-    im_info = [np.array([roidb[i]['im_info']], dtype=np.float32) for i in range(len(roidb))]
-
-    im_rois = [roidb[i]['boxes'] for i in range(len(roidb))]
-    rois = im_rois
-    rois_array = [np.hstack((0 * np.ones((rois[i].shape[0], 1)), rois[i])) for i in range(len(rois))]
-
-    data = [{'data': im_array[i],
-             'rois': rois_array[i]} for i in range(len(roidb))]
-    label = {}
-
-    return data, label, im_info
-
-
-def get_rcnn_batch(roidb, cfg):
-    """
-    return a dict of multiple images
-    :param roidb: a list of dict, whose length controls batch size
-    ['images', 'flipped'] + ['gt_boxes', 'boxes', 'gt_overlap'] => ['bbox_targets']
-    :return: data, label
-    """
-    num_images = len(roidb)
-    imgs, roidb = get_image(roidb, cfg)
-    im_array = tensor_vstack(imgs)
-
-    assert cfg.TRAIN.BATCH_ROIS == -1 or cfg.TRAIN.BATCH_ROIS % cfg.TRAIN.BATCH_IMAGES == 0, \
-        'BATCHIMAGES {} must divide BATCH_ROIS {}'.format(cfg.TRAIN.BATCH_IMAGES, cfg.TRAIN.BATCH_ROIS)
-
-    if cfg.TRAIN.BATCH_ROIS == -1:
-        rois_per_image = np.sum([iroidb['boxes'].shape[0] for iroidb in roidb])
-        fg_rois_per_image = rois_per_image
-    else:
-        rois_per_image = cfg.TRAIN.BATCH_ROIS / cfg.TRAIN.BATCH_IMAGES
-        fg_rois_per_image = np.round(cfg.TRAIN.FG_FRACTION * rois_per_image).astype(int)
-
-    rois_array = list()
-    labels_array = list()
-    bbox_targets_array = list()
-    bbox_weights_array = list()
-
-    for im_i in range(num_images):
-        roi_rec = roidb[im_i]
-
-        # infer num_classes from gt_overlaps
-        num_classes = roi_rec['gt_overlaps'].shape[1]
-
-        # label = class RoI has max overlap with
-        rois = roi_rec['boxes']
-        labels = roi_rec['max_classes']
-        overlaps = roi_rec['max_overlaps']
-        bbox_targets = roi_rec['bbox_targets']
-
-        im_rois, labels, bbox_targets, bbox_weights = \
-            sample_rois(rois, fg_rois_per_image, rois_per_image, num_classes, cfg,
-                        labels, overlaps, bbox_targets)
-
-        # project im_rois
-        # do not round roi
-        rois = im_rois
-        batch_index = im_i * np.ones((rois.shape[0], 1))
-        rois_array_this_image = np.hstack((batch_index, rois))
-        rois_array.append(rois_array_this_image)
-
-        # add labels
-        labels_array.append(labels)
-        bbox_targets_array.append(bbox_targets)
-        bbox_weights_array.append(bbox_weights)
-
-    rois_array = np.array(rois_array)
-    labels_array = np.array(labels_array)
-    bbox_targets_array = np.array(bbox_targets_array)
-    bbox_weights_array = np.array(bbox_weights_array)
-
-    data = {'data': im_array,
-            'rois': rois_array}
-    label = {'label': labels_array,
-             'bbox_target': bbox_targets_array,
-             'bbox_weight': bbox_weights_array}
-
-    return data, label
-
-
-def sample_rois(rois, fg_rois_per_image, rois_per_image, num_classes, cfg,
+def sample_rois(rois, fg_rois_per_image, rois_per_image, num_classes,
                 labels=None, overlaps=None, bbox_targets=None, gt_boxes=None, gt_kps=None):
     """
     generate random sample of ROIs comprising foreground and background examples
@@ -184,6 +95,11 @@ def sample_rois(rois, fg_rois_per_image, rois_per_image, num_classes, cfg,
     bbox_targets, bbox_weights = \
         expand_bbox_regression_targets(bbox_target_data, num_classes, cfg)
 
+    res = {'rois_output': rois,
+           'label'      : labels,
+           'bbox_target': bbox_targets,
+           'bbox_weight': bbox_weights,
+        }
     if gt_kps is not None:
         keep_kps = gt_kps[gt_assignment[keep_indexes]]
         n_keep = keep_kps.shape[0]
@@ -205,13 +121,11 @@ def sample_rois(rois, fg_rois_per_image, rois_per_image, num_classes, cfg,
         normalizer = 1.0 / (num_fg + 1e-3)
         kps_weights[:num_fg] = fg_kps_weight * normalizer
 
-        kps_labels = kps_labels.reshape([-1])
-        kps_targets = kps_targets.transpose([0,1,4,2,3]).reshape([n_keep, -1, G, G])
-        kps_weights = kps_weights.transpose([0,1,4,2,3]).reshape([n_keep, -1, G, G])
+        res['kps_label'] = kps_labels.reshape([-1])
+        res['kps_target'] = kps_targets.transpose([0,1,4,2,3]).reshape([n_keep, -1, G, G])
+        res['kps_weight'] = kps_weights.transpose([0,1,4,2,3]).reshape([n_keep, -1, G, G])
 
-        return rois, labels, bbox_targets, bbox_weights, kps_labels, kps_targets, kps_weights
-
-    return rois, labels, bbox_targets, bbox_weights
+    return res
 
 
 def assign_keypoints(rois, gt_kps, pooled_size=7):

@@ -25,8 +25,7 @@ from generate_anchor import generate_anchors
 from bbox.bbox_transform import bbox_overlaps, bbox_transform
 
 
-def assign_anchor(feat_shape, gt_boxes, im_info, cfg, feat_stride=16,
-                  scales=(8, 16, 32), ratios=(0.5, 1, 2), allowed_border=0):
+def assign_anchor(feat_shape, gt_boxes, im_info, cfg, allowed_border=0):
     """
     assign ground truth boxes to anchor positions
     :param feat_shape: infer output shape
@@ -42,6 +41,9 @@ def assign_anchor(feat_shape, gt_boxes, im_info, cfg, feat_stride=16,
     'bbox_inside_weight': *todo* mark the assigned anchors
     'bbox_outside_weight': used to normalize the bbox_loss, all weights sums to RPN_POSITIVE_WEIGHT
     """
+    feat_stride = cfg.network.RPN_FEAT_STRIDE
+    scales = cfg.network.ANCHOR_SCALES
+    ratios = cfg.network.ANCHOR_RATIOS
     def _unmap(data, count, inds, fill=0):
         """" unmap a subset inds of data into original data of size count """
         if len(data.shape) == 1:
@@ -54,14 +56,14 @@ def assign_anchor(feat_shape, gt_boxes, im_info, cfg, feat_stride=16,
             ret[inds, :] = data
         return ret
 
-    DEBUG = False
-    im_info = im_info[0]
     scales = np.array(scales, dtype=np.float32)
     base_anchors = generate_anchors(base_size=feat_stride, ratios=list(ratios), scales=scales)
     num_anchors = base_anchors.shape[0]
     feat_height, feat_width = feat_shape[-2:]
 
+    DEBUG = False
     if DEBUG:
+        print '-' * 32
         print 'anchors:'
         print base_anchors
         print 'anchor shapes:'
@@ -129,6 +131,7 @@ def assign_anchor(feat_shape, gt_boxes, im_info, cfg, feat_stride=16,
             # assign bg labels last so that negative labels can clobber positives
             labels[max_overlaps < cfg.TRAIN.RPN_NEGATIVE_OVERLAP] = 0
     else:
+        max_overlaps = None
         labels[:] = 0
 
     # subsample positive labels if we have too many
@@ -171,7 +174,8 @@ def assign_anchor(feat_shape, gt_boxes, im_info, cfg, feat_stride=16,
     bbox_weights = _unmap(bbox_weights, total_anchors, inds_inside, fill=0)
 
     if DEBUG:
-        print 'rpn: max max_overlaps', np.max(max_overlaps)
+        if max_overlaps is not None:
+            print 'rpn: max max_overlaps', np.max(max_overlaps)
         print 'rpn: num_positives', np.sum(labels == 1)
         print 'rpn: num_negatives', np.sum(labels == 0)
         _fg_sum = np.sum(labels == 1)
