@@ -19,21 +19,14 @@ from utils.image import get_image, tensor_vstack
 from rpn.rpn import assign_anchor, assign_pyramid_anchor
 from core.rcnn import sample_rois
 
-def as_mx(arr):
-    if isinstance(arr, mx.nd.NDArray):
-        return arr
-    else:
-        return mx.nd.array(arr)
-
-
-def get_rpn_testbatch(roidb, batch_size, cfg, data_buf):
+def get_rpn_testbatch(roidb, target_scale, batch_size, cfg, data_buf):
     """
     """
     assert len(roidb) > 0 , 'empty list !'
 
     # get images
     t0 = time.time() ###
-    target_size, max_size = cfg.TEST.SCALES[0]
+    target_size, max_size = target_scale
     imgs, roidb = get_image(roidb, target_size, max_size, stride=cfg.network.IMAGE_STRIDE)
     max_h = max([img.shape[0] for img in imgs])
     max_w = max([img.shape[1] for img in imgs])
@@ -65,13 +58,12 @@ def get_rpn_testbatch(roidb, batch_size, cfg, data_buf):
     return shapes
 
 
-def get_rpn_batch(roidb, sym, cfg, data_buf, allowed_border=0, max_gts=100, kps_dim=0):
+def get_rpn_batch(roidb, target_scale, sym, cfg, data_buf, allowed_border=0, max_gts=100, kps_dim=0, stride=32):
     """
     allowed_border:
 
     max_gts:
         max number of groundtruths
-
     kps_dim:
         when trainning with keypoints, set kps_dim >0
     """
@@ -80,10 +72,13 @@ def get_rpn_batch(roidb, sym, cfg, data_buf, allowed_border=0, max_gts=100, kps_
 
     # get images
     t0 = time.time() ###
-    target_size, max_size = random.choice(cfg.TRAIN.SCALES)
-    imgs, roidb = get_image(roidb, target_size, max_size, stride=cfg.network.IMAGE_STRIDE)
+    target_size, max_size = target_scale
+    imgs, roidb = get_image(roidb, target_size, max_size)
     max_h = max([img.shape[0] for img in imgs])
     max_w = max([img.shape[1] for img in imgs])
+    stride = float(stride)
+    max_h = int(np.ceil(max_h/stride) * stride)
+    max_w = int(np.ceil(max_w/stride) * stride)
     t1 = time.time() ###
 
     # assign anchor labels
@@ -157,28 +152,32 @@ class TestLoader(mx.io.DataIter):
 
         # decide data and label names
         self.max_data_shapes = dict()
-        self.max_size =  max([max(s) for s in cfg.TEST.SCALES])
-        self.max_data_shapes['data'] = (self.batch_size, 3, self.max_size, self.max_size)
+        self.max_h =  cfg.TEST.SCALES[0][0]
+        self.max_w =  cfg.TEST.SCALES[0][1]
+        self.max_data_shapes['data'] = (self.batch_size, 3, self.max_h, self.max_w)
         self.max_data_shapes['im_info'] = (self.batch_size, 3)
         self.data_names = self.max_data_shapes.keys()
         self._provide_data = [(k, self.max_data_shapes[k]) for k in self.data_names]
 
-        # init bufs
+        self.buf_size = 3
         self.i_buf = 0
-        self.buf_size = 1
-        self.buf_list = []
-        self.init_buffer()
 
+        # init
+        self.init_buffer()
         self.reset()
 
     def init_buffer(self):
         self.buf_list = []
+        self.mx_buf_list = []
         all_shapes = self.provide_data + self.provide_label
         for i in range(self.buf_size):
             buf = dict()
+            mx_buf = dict()
             for k, s in all_shapes:
                 size = np.prod(s)
                 buf[k] = sharedctypes.RawArray('f', size)
+                mx_buf[k] = mx.nd.zeros(size, ctx=mx.context.cpu_pinned())
+            self.mx_buf_list.append(mx_buf)
             self.buf_list.append(buf)
 
     @property
@@ -192,12 +191,20 @@ class TestLoader(mx.io.DataIter):
     def reset(self):
         self.cur = 0
 
+        # slice roidb
+        self.slices = [self.roidb[i:i+self.batch_size] for i in range(0,self.size,self.batch_size)]
+        self.i_slice = 0
+        print 'total batches:', len(self.slices) ###
+        self.target_scale = self.cfg.TEST.SCALES[0]
+
     def iter_next(self):
         return self.cur < self.size
 
     def next(self):
         if self.iter_next():
+            t0 = time.time() ###
             batch = self.get_batch()
+            print 'get_batch:', time.time() -t0 ###
             self.cur += self.batch_size
             return batch
         else:
@@ -213,20 +220,22 @@ class TestLoader(mx.io.DataIter):
             return 0
 
     def get_batch(self):
-        cur_from = self.cur
-        cur_to = min(cur_from + self.batch_size, self.size)
-        roidb = [self.roidb[self.index[i]] for i in range(cur_from, cur_to)]
-        buf = self.buf_list[self.i_buf]
-        shapes = get_rpn_testbatch(roidb, self.batch_size, self.cfg, buf)
         self.i_buf = (self.i_buf + 1) % self.buf_size
+        buf = self.buf_list[self.i_buf]
+        mx_buf = self.mx_buf_list[self.i_buf]
+        roidb = self.slices[self.i_slice]
+        shapes = get_rpn_testbatch(roidb, self.target_scale, self.batch_size, self.cfg, buf)
 
         data = dict()
         for k in shapes:
             s = shapes[k]
             c = np.prod(s)
-            data[k] = np.frombuffer(buf[k], dtype=np.float32, count=c).reshape(s)
-            data[k] = as_mx(data[k])
-        self._provide_data  = [(k, data[k].shape) for k in self.data_names]
+            mx_arr = mx_buf[k][:c]
+            mx_arr[:] = np.frombuffer(buf[k], dtype=np.float32, count=c)
+            data[k] = mx_arr.reshape(s)
+
+        self.i_slice += 1
+        self._provide_data = [(k, data[k].shape) for k in self.data_names]
         return mx.io.DataBatch(data  = [data[k] for k in self.data_names],
                                label = [],
                                pad   = self.getpad(),
@@ -240,7 +249,7 @@ class AnchorLoader(mx.io.DataIter):
 
     def __init__(self, feat_sym, roidb, cfg, batch_size=1, shuffle=False, ctx=None, work_load_list=None,
                  feat_stride=16, anchor_scales=(8, 16, 32), anchor_ratios=(0.5, 1, 2), allowed_border=0,
-                 aspect_grouping=False):
+                 aspect_grouping=True):
         """
         This Iter will provide roi data to Fast R-CNN network
         :param feat_sym: to infer shape of assign_output
@@ -269,7 +278,8 @@ class AnchorLoader(mx.io.DataIter):
         self.allowed_border = allowed_border
         self.aspect_grouping = aspect_grouping
         self.max_gts = cfg.dataset.MAX_BOXES_PER_IMAGE
-        self.max_size =  max([max(s) for s in cfg.TRAIN.SCALES])
+        self.max_h =  max([s[0] for s in cfg.TRAIN.SCALES])
+        self.max_w =  max([s[1] for s in cfg.TRAIN.SCALES])
 
         # infer properties from roidb
         self.size = len(roidb)
@@ -278,7 +288,7 @@ class AnchorLoader(mx.io.DataIter):
 
         # decide data and label names
         self.max_data_shapes = dict()
-        self.max_data_shapes['data'] = (self.batch_size, 3, self.max_size, self.max_size)
+        self.max_data_shapes['data'] = (self.batch_size, 3, self.max_h, self.max_w)
         self.max_data_shapes['im_info'] = (self.batch_size, 3)
         self.max_data_shapes['gt_boxes'] = (self.batch_size, self.max_gts, 5)
         if cfg.network.PREDICT_KEYPOINTS:
@@ -289,16 +299,11 @@ class AnchorLoader(mx.io.DataIter):
         self.data_names = self.max_data_shapes.keys()
         self.label_names = ['label', 'bbox_target', 'bbox_weight']
 
-        # status variable for synchronization between get_data and get_label
-        self.cur = 0
-        self._provide_data = None
-        self._provide_label = None
+        self.buf_size = 4
 
         # multiprocess for loading batch
-        self.buf_size = 4
-        self.buf_list = []
-        self.buf_queue = None
-        self.num_worker = 4
+        self.num_worker = self.buf_size
+        self.slice_queue = None
         self.batch_queue = None
         self.batch_process = None
 
@@ -309,7 +314,7 @@ class AnchorLoader(mx.io.DataIter):
 
     def infer_shape(self):
         _, feat_shape, _ = self.feat_sym.infer_shape(data=self.max_data_shapes['data'])
-        im_info = [self.max_size, self.max_size, 1.0]
+        im_info = [self.max_h, self.max_w, 1.0]
         label = assign_anchor(feat_shape[0], np.zeros((0, 5)), im_info, self.cfg, self.allowed_border)
         label = [label[k] for k in self.label_names]
         label_shapes = [tuple([self.batch_size] + list(v.shape[1:])) for v in label]
@@ -317,19 +322,22 @@ class AnchorLoader(mx.io.DataIter):
         self._provide_data = [(k, self.max_data_shapes[k]) for k in self.data_names]
 
     def init_buffer(self):
-        self.buf_queue = mp.Queue()
         self.buf_list = []
+        self.mx_buf_list = []
         all_shapes = self.provide_data + self.provide_label
         for i in range(self.buf_size):
             buf = dict()
+            mx_buf = dict()
             for k, s in all_shapes:
                 size = np.prod(s)
                 buf[k] = sharedctypes.RawArray('f', size)
+                mx_buf[k] = mx.nd.zeros(size, ctx=mx.context.cpu_pinned())
+            self.mx_buf_list.append(mx_buf)
             self.buf_list.append(buf)
-            self.buf_queue.put(i)
 
     def reset(self):
         self.cur = 0
+
         # shuffle indexes
         if self.shuffle:
             if self.aspect_grouping:
@@ -337,31 +345,41 @@ class AnchorLoader(mx.io.DataIter):
             np.random.shuffle(self.index)
             self.index = self.index.flatten()
 
-        # terminate all worker process
-        if self.batch_process is not None:
-            self.terminate()
         # slice roidb
-        roidb_slices = [self.roidb[i:i+self.batch_size] for i in range(0,self.size,self.batch_size)]
-        print 'total roidb_slices:', len(roidb_slices) ###
-        # reset batch_queue
-        self.batch_queue = mp.Queue(self.num_worker)
+        self.slices = [self.roidb[i:i+self.batch_size] for i in range(0,self.size,self.batch_size)]
+        self.i_slice = 0
+        print 'total batches:', len(self.slices) ###
+        self.target_scale = random.choice(self.cfg.TRAIN.SCALES)
 
-        # start worker process
-        self.batch_process = []
-        def worker(roidbs, q_buf, q_batch):
-            for r in roidbs:
-                i_buf = q_buf.get()
-                #print i_buf, 'used' ###
+        self.restart_workers()
+
+    def restart_workers(self):
+        # terminate all worker process
+        self.terminate()
+        # reset queues
+        self.batch_queue = mp.Queue()
+        self.slice_queue = mp.Queue()
+        for ib in range(self.buf_size):
+            self.slice_queue.put((ib, ib, self.target_scale))
+        self.i_slice = self.buf_size
+
+        def worker(q_slice, q_batch):
+            while True:
+                i_buf, i_slice, target_scale = q_slice.get()
+                if i_slice >= len(self.slices):
+                    break
+                #print 'get <- ', i_buf, i_slice, target_scale ###
                 buf = self.buf_list[i_buf]
-                shapes = get_rpn_batch(r, self.feat_sym, self.cfg, buf,
+                roidb = self.slices[i_slice]
+                shapes = get_rpn_batch(roidb, target_scale, self.feat_sym, self.cfg, buf,
                                        allowed_border=self.allowed_border,
                                        max_gts=self.max_gts,
                                        kps_dim=self.kps_dim)
                 q_batch.put((i_buf, shapes))
+        # start worker process
+        self.batch_process = []
         for i in range(self.num_worker):
-            roidb_slice = roidb_slices[i::self.num_worker]
-            print 'worker roidb_slices:', len(roidb_slice) ###
-            p = mp.Process(target=worker, args=(roidb_slice, self.buf_queue, self.batch_queue))
+            p = mp.Process(target=worker, args=(self.slice_queue, self.batch_queue))
             self.batch_process.append(p)
             p.start()
 
@@ -398,34 +416,147 @@ class AnchorLoader(mx.io.DataIter):
         else:
             return 0
 
-
     def get_batch(self):
-        '''
-        cur_from = self.cur
-        cur_to = min(cur_from + self.batch_size, self.size)
-        roidb = [self.roidb[self.index[i]] for i in range(cur_from, cur_to)]
-        buf = self.buf_list[0]
-        shapes = get_rpn_batch(roidb, self.feat_sym, self.cfg, buf,
-                               allowed_border=self.allowed_border,
-                               max_gts=self.max_gts,
-                               kps_dim=self.kps_dim)
-        '''
         i_buf, shapes = self.batch_queue.get()
         buf = self.buf_list[i_buf]
+        mx_buf = self.mx_buf_list[i_buf]
 
         t0 = time.time() ###
         data = dict()
         for k in shapes:
             s = shapes[k]
             c = np.prod(s)
-            data[k] = np.frombuffer(buf[k], dtype=np.float32, count=c).reshape(s)
-            data[k] = as_mx(data[k])
-        self.buf_queue.put(i_buf)
-        #print i_buf, 'free', 'to_mx:', time.time() - t0 ###
+            mx_arr = mx_buf[k][:c]
+            mx_arr[:] = np.frombuffer(buf[k], dtype=np.float32, count=c)
+            data[k] = mx_arr.reshape(s)
+
+        self.slice_queue.put((i_buf, self.i_slice, self.target_scale))
+        #print 'put -> ', i_buf, self.i_slice, self.target_scale ###
+
+        self.i_slice += 1
+        if self.i_slice % 10 == 0:
+            self.target_scale = random.choice(self.cfg.TRAIN.SCALES)
         self._provide_data  = [(k, data[k].shape) for k in self.data_names]
         self._provide_label = [(k, data[k].shape) for k in self.label_names]
         return mx.io.DataBatch(data  = [data[k] for k in self.data_names],
                                label = [data[k] for k in self.label_names],
+                               pad   = self.getpad(),
+                               index = self.getindex(),
+                               provide_data  = self.provide_data,
+                               provide_label = self.provide_label)
+
+
+
+class DummyAnchorLoader(mx.io.DataIter):
+
+    def __init__(self, feat_sym, roidb, cfg, batch_size=1, shuffle=False, ctx=None, work_load_list=None,
+                 feat_stride=16, anchor_scales=(8, 16, 32), anchor_ratios=(0.5, 1, 2), allowed_border=0,
+                 aspect_grouping=True):
+        """
+        DummyAnchorLoader
+        """
+        super(DummyAnchorLoader, self).__init__()
+
+        # save parameters as properties
+        self.feat_sym = feat_sym
+        self.roidb = roidb
+        self.cfg = cfg
+        self.batch_size = batch_size
+        self.shuffle = shuffle
+        self.ctx = ctx
+        if self.ctx is None:
+            self.ctx = [mx.cpu()]
+        self.work_load_list = work_load_list
+        self.feat_stride = feat_stride
+        self.anchor_scales = anchor_scales
+        self.anchor_ratios = anchor_ratios
+        self.allowed_border = allowed_border
+        self.aspect_grouping = aspect_grouping
+        self.max_gts = cfg.dataset.MAX_BOXES_PER_IMAGE
+        self.max_h = 960
+        self.max_w = 960
+
+        # infer properties from roidb
+        self.size = len(roidb)
+        self.size -= self.size % self.batch_size # make size can be divided by batch_size
+        self.index = np.arange(self.size)
+
+        # decide data and label names
+        self.max_data_shapes = dict()
+        self.max_data_shapes['data'] = (self.batch_size, 3, self.max_h, self.max_w)
+        self.max_data_shapes['im_info'] = (self.batch_size, 3)
+        self.max_data_shapes['gt_boxes'] = (self.batch_size, self.max_gts, 5)
+        if cfg.network.PREDICT_KEYPOINTS:
+            self.kps_dim = 3*cfg.dataset.NUM_KEYPOINTS
+            self.max_data_shapes['gt_kps'] = (self.batch_size, self.max_gts, self.kps_dim)
+        else:
+            self.kps_dim = 0
+        self.data_names = self.max_data_shapes.keys()
+        self.label_names = ['label', 'bbox_target', 'bbox_weight']
+
+        self.infer_shape()
+        self.reset()
+
+        # init data
+        self.data = dict()
+        self.data['data'] = np.random.uniform(-1, 1, self.max_data_shapes['data'])
+        self.data['im_info'] = np.array([(self.max_h, self.max_w, 1.0)]*self.batch_size)
+        self.data['gt_boxes'] = np.zeros(self.max_data_shapes['gt_boxes'])
+        self.data['gt_boxes'][:, 0, 0] = 1.0
+        self.data['gt_boxes'][:, 0, 1] = 1.0
+        self.data['gt_boxes'][:, 0, 2] = 100.0
+        self.data['gt_boxes'][:, 0, 3] = 100.0
+        self.data['gt_boxes'][:, 0, 4] = 1.0
+        for k,v in self.provide_label:
+            self.data[k] = np.zeros(v)
+        for k in self.data:
+            self.data[k] =  mx.nd.array(self.data[k], ctx=mx.context.cpu_pinned())
+
+    def infer_shape(self):
+        _, feat_shape, _ = self.feat_sym.infer_shape(data=self.max_data_shapes['data'])
+        im_info = [self.max_h, self.max_w, 1.0]
+        label = assign_anchor(feat_shape[0], np.zeros((0, 5)), im_info, self.cfg, self.allowed_border)
+        label = [label[k] for k in self.label_names]
+        label_shapes = [tuple([self.batch_size] + list(v.shape[1:])) for v in label]
+        self._provide_label = zip(self.label_names, label_shapes)
+        self._provide_data = [(k, self.max_data_shapes[k]) for k in self.data_names]
+
+    def reset(self):
+        self.cur = 0
+
+    @property
+    def provide_data(self):
+        return self._provide_data
+
+    @property
+    def provide_label(self):
+        return self._provide_label
+
+    def iter_next(self):
+        return self.cur < self.size
+
+    def next(self):
+        if self.iter_next():
+            batch = self.get_batch()
+            self.cur += self.batch_size
+            return batch
+        else:
+            raise StopIteration
+
+    def getindex(self):
+        return self.cur / self.batch_size
+
+    def getpad(self):
+        if self.cur + self.batch_size > self.size:
+            return self.cur + self.batch_size - self.size
+        else:
+            return 0
+
+    def get_batch(self):
+        self._provide_data  = [(k, self.data[k].shape) for k in self.data_names]
+        self._provide_label = [(k, self.data[k].shape) for k in self.label_names]
+        return mx.io.DataBatch(data  = [self.data[k] for k in self.data_names],
+                               label = [self.data[k] for k in self.label_names],
                                pad   = self.getpad(),
                                index = self.getindex(),
                                provide_data  = self.provide_data,

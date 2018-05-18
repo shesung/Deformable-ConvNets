@@ -16,11 +16,18 @@ def load_checkpoint(prefix, epoch):
     arg_params = {}
     aux_params = {}
     for k, v in save_dict.items():
-        tp, name = k.split(':', 1)
-        if tp == 'arg':
-            arg_params[name] = v
-        if tp == 'aux':
-            aux_params[name] = v
+        if ':' in k:
+            tp, name = k.split(':', 1)
+            if tp == 'arg':
+                arg_params[name] = v
+            if tp == 'aux':
+                aux_params[name] = v
+        else:
+            # gluon weights
+            if k.endswith('running_mean') or k.endswith('running_var'):
+                aux_params[k.replace('running', 'moving')] = v
+            else:
+                arg_params[k] = v
     return arg_params, aux_params
 
 

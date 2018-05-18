@@ -41,7 +41,7 @@ import mxnet as mx
 
 from symbols import *
 from core import callback, metric
-from core.loader import AnchorLoader, PyramidAnchorLoader
+from core.loader import DummyAnchorLoader, AnchorLoader, PyramidAnchorLoader
 from core.mutable_module import MutableModule
 from utils.create_logger import create_logger
 from utils.load_data import load_gt_roidb, merge_roidb, filter_roidb
@@ -174,17 +174,14 @@ def train_net(args, ctx, pretrained, epoch, prefix, begin_epoch, end_epoch, lr, 
                         'rescale_grad': 1.0,
                         'clip_gradient': None}
 
-    #if not isinstance(train_data, PrefetchingIter):
-    #    train_data = PrefetchingIter(train_data)
+    if not isinstance(train_data, PrefetchingIter):
+        train_data = PrefetchingIter(train_data)
 
     # train
     mod.fit(train_data, eval_metric=eval_metrics, epoch_end_callback=epoch_end_callback,
             batch_end_callback=batch_end_callback, kvstore=config.TRAIN.kvstore,
             optimizer='sgd', optimizer_params=optimizer_params,
             arg_params=arg_params, aux_params=aux_params, begin_epoch=begin_epoch, num_epoch=end_epoch)
-
-    train_data.terminate()
-
 
 def main():
     print('Called with argument:', args)

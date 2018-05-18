@@ -12,9 +12,9 @@ from operator_py.proposal import *
 from operator_py.proposal_target import *
 from operator_py.box_annotator_ohem import *
 
-from resnet import get_resnet
+from resnet_v1 import get_resnet
 
-class resnet_light(Symbol):
+class resnet_v1_light(Symbol):
 
     def get_backbone(self, data, cfg):
         strides = [1, 2, 2, 1]

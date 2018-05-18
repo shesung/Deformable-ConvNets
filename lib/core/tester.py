@@ -31,7 +31,6 @@ class Predictor(object):
         # warm up
         shape_dict  = dict(provide_data)
         max_size = max(shape_dict['data'])
-        shape_dict['data'] = (shape_dict['data'][0], shape_dict['data'][1], max_size, max_size)
         data = [mx.nd.zeros(shape_dict[k]) for k in data_names]
         for j in xrange(2):
             data_batch = mx.io.DataBatch(data=data, label=[], pad=0, index=0,

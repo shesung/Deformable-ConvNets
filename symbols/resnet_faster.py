@@ -292,7 +292,8 @@ class resnet_faster(Symbol):
         feat_stride = 16
         pooled_size = (7, 7)
         if cfg.network.ROIALIGN:
-            roi_pool = mx.symbol.ROIAlign(name='roi_pool', data=roi_data, rois=rois,
+            #roi_pool = mx.symbol.ROIAlign(name='roi_pool', data=roi_data, rois=rois,
+            roi_pool = mx.contrib.sym.ROIAlign_v1(name='roi_pool', data=roi_data, rois=rois,
                                           pooled_size=pooled_size,
                                           spatial_scale=1.0 / feat_stride)
         else:
