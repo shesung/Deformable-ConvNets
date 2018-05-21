@@ -178,6 +178,8 @@ class MutableModule(BaseModule):
                 shape_changed = True
 
         if shape_changed:
+            import time
+            t0 = time.time() ###
             module = Module(self._symbol, self._data_names, self._label_names,
                             logger=self.logger, context=self._context,
                             work_load_list=self._work_load_list,
@@ -189,6 +191,7 @@ class MutableModule(BaseModule):
                         self._curr_module.inputs_need_grad, force_rebind=False,
                         shared_module=self._curr_module)
             self._curr_module = module
+            print 'rebind:%.3f' % (time.time() - t0), data_batch.provide_data ###
 
         self._curr_module.forward(data_batch, is_train=is_train)
 

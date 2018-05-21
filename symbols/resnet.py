@@ -71,7 +71,6 @@ def get_resnet(data, num_layers, strides=[1,2,2,2]):
     memonger = True
     bn_mom = 0.9
     workspace = 256
-    use_dilated_in_stage4 = False
 
     if num_layers >= 50:
         filter_list = [64, 256, 512, 1024, 2048]
@@ -80,6 +79,7 @@ def get_resnet(data, num_layers, strides=[1,2,2,2]):
     else:
         filter_list = [64, 64, 128, 256, 512]
         bottle_neck = False
+        use_dilated_in_stage4 = False
 
     if num_layers == 18:
         units = [2, 2, 2, 2]

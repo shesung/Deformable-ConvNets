@@ -351,8 +351,6 @@ class AnchorLoader(mx.io.DataIter):
         print 'total batches:', len(self.slices) ###
         self.target_scale = random.choice(self.cfg.TRAIN.SCALES)
 
-        self.restart_workers()
-
     def restart_workers(self):
         # terminate all worker process
         self.terminate()
@@ -366,9 +364,9 @@ class AnchorLoader(mx.io.DataIter):
         def worker(q_slice, q_batch):
             while True:
                 i_buf, i_slice, target_scale = q_slice.get()
+                #print 'get <- ', i_buf, i_slice, target_scale ###
                 if i_slice >= len(self.slices):
                     break
-                #print 'get <- ', i_buf, i_slice, target_scale ###
                 buf = self.buf_list[i_buf]
                 roidb = self.slices[i_slice]
                 shapes = get_rpn_batch(roidb, target_scale, self.feat_sym, self.cfg, buf,
@@ -388,6 +386,9 @@ class AnchorLoader(mx.io.DataIter):
             for w in self.batch_process:
                 w.terminate()
 
+    def __del__(self):
+        self.terminate()
+
     @property
     def provide_data(self):
         return self._provide_data
@@ -400,6 +401,8 @@ class AnchorLoader(mx.io.DataIter):
         return self.cur < self.size
 
     def next(self):
+        if self.cur == 0:
+            self.restart_workers()
         if self.iter_next():
             batch = self.get_batch()
             self.cur += self.batch_size

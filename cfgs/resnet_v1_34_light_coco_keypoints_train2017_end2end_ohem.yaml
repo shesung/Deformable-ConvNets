@@ -15,9 +15,8 @@ network:
   RCNN_FEAT_STRIDE: 16
   RPN_FEAT_STRIDE: 16
   FIXED_PARAMS:
-  - bn_data
   - conv0
-  - bn0
+  - batchnorm
   - stage1
   ANCHOR_RATIOS: [0.5, 1, 2]
   ANCHOR_SCALES: [2, 4, 8, 16, 32]
@@ -125,6 +124,6 @@ TEST:
   RPN_MIN_SIZE: 1
   # RCNN nms
   NMS: 0.3
-  test_epoch: 3
+  test_epoch: 6
   max_per_image: 100
 

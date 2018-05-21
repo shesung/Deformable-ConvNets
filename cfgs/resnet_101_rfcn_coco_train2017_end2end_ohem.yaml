@@ -1,11 +1,11 @@
 ---
 output_path: "./output/coco"
-symbol: resnet_light
+symbol: resnet_rfcn
 gpus: '0,1,2,3,4,5,6,7'
 CLASS_AGNOSTIC: true
 network:
-  NUM_LAYERS: 50
-  pretrained: "./model/pretrained_model/resnet-50"
+  NUM_LAYERS: 101
+  pretrained: "./model/pretrained_model/resnet-101"
   pretrained_epoch: 0
   PIXEL_MEANS:
   - 103.06
@@ -23,20 +23,20 @@ network:
   ANCHOR_SCALES: [2, 4, 8, 16, 32]
   NUM_ANCHORS: 15
 dataset:
-  NUM_CLASSES: 2
+  NUM_CLASSES: 81
   dataset: coco
   dataset_path: "./data/coco"
-  image_set: keypoints_train2017
+  image_set: train2017
   root_path: "./data"
-  test_image_set: keypoints_val2017
+  test_image_set: val2017
   proposal: rpn
 TRAIN:
-  IMAGES_PER_GPU: 4
+  IMAGES_PER_GPU: 1
   SCALES: [[640,1280], [656,1280], [672,1280], [688, 1280], [704,1280], [720,1280], [736,1280], [752, 1280], [768,1280], [784, 1280], [800, 1280]] 
   frequent: 100
   kvstore: device
-  lr: 0.01
-  lr_step: '4,5'
+  lr: 0.001
+  lr_step: '4,6'
   warmup: true
   warmup_lr: 0.00005
   # typically we will use 8000 warmup step for single GPU for COCO
@@ -44,8 +44,8 @@ TRAIN:
   wd: 0.0001
   momentum: 0.9
   begin_epoch: 0
-  end_epoch: 6
-  model_prefix: 'resnet_50_light'
+  end_epoch: 7
+  model_prefix: 'resnet_101_rfcn'
   # whether resume training
   RESUME: false
   # whether flip image
@@ -125,6 +125,6 @@ TEST:
   RPN_MIN_SIZE: 1
   # RCNN nms
   NMS: 0.3
-  test_epoch: 6
+  test_epoch: 7
   max_per_image: 100
 

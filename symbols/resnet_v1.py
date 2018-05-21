@@ -33,7 +33,7 @@ def residual_unit(data, num_filter, stride, dim_match, name, bottle_neck=True, b
     pad_dilate = (2,2) if use_dilated else (1,1)
     if bottle_neck:
         conv1 = mx.sym.Convolution(data=data, num_filter=int(num_filter*0.25), kernel=(1,1), stride=stride, pad=(0,0),
-                                   no_bias=True, workspace=workspace, name='%s_conv%d'%(name, conv_idx))
+                                   workspace=workspace, name='%s_conv%d'%(name, conv_idx))
         conv_idx += 1
         bn1 = mx.sym.BatchNorm(data=conv1, fix_gamma=False, use_global_stats=use_global_stats, eps=2e-5, momentum=bn_mom,
                                name='%s_batchnorm%d'%(name, bn_idx))
@@ -49,7 +49,7 @@ def residual_unit(data, num_filter, stride, dim_match, name, bottle_neck=True, b
         bn_idx += 1
         act2 = mx.sym.Activation(data=bn2, act_type='relu', name='%s_relu%d'%(name, relu_idx))
         relu_idx += 1
-        conv3 = mx.sym.Convolution(data=act2, num_filter=num_filter, kernel=(1,1), stride=(1,1), pad=(0,0), no_bias=True,
+        conv3 = mx.sym.Convolution(data=act2, num_filter=num_filter, kernel=(1,1), stride=(1,1), pad=(0,0),
                                    workspace=workspace, name='%s_conv%d'%(name, conv_idx))
         conv_idx += 1
         bn3 = mx.sym.BatchNorm(data=conv3, fix_gamma=False, use_global_stats=use_global_stats, eps=2e-5, momentum=bn_mom,
@@ -108,12 +108,13 @@ def get_resnet(data, num_layers, strides=[1,2,2,2]):
     global unit_idx
     memonger = True
     bn_mom = 0.9
-    workspace = 512
-    use_dilated_in_stage5 = False
+    workspace = 256
+    use_dilated_in_stage4 = False
 
     if num_layers >= 50:
         filter_list = [64, 256, 512, 1024, 2048]
         bottle_neck = True
+        use_dilated_in_stage4 = True
     else:
         filter_list = [64, 64, 128, 256, 512]
         bottle_neck = False
@@ -147,11 +148,11 @@ def get_resnet(data, num_layers, strides=[1,2,2,2]):
         conv_idx = 0
         bn_idx = 0
         relu_idx = 0
-        use_dilated = (i == 3 and use_dilated_in_stage5)
+        use_dilated = (i == 3 and use_dilated_in_stage4)
         body = residual_unit(body,
                              num_filter  = filter_list[i+1],
                              stride      = (strides[i], strides[i]),
-                             dim_match   = False if i > 0 else True,
+                             dim_match   = (filter_list[i+1] == filter_list[i]),
                              use_dilated = use_dilated,
                              name        = 'stage%d' % (i + 1),
                              bottle_neck = bottle_neck,
